@@ -144,14 +144,14 @@ class FightDetector:
         if audio_path is None or not audio_path.exists():
             return []
         try:
-            import whisper
+            from faster_whisper import WhisperModel
 
-            model = whisper.load_model("base", device="cpu")
-            result = model.transcribe(str(audio_path))
+            model = WhisperModel("base", device="cpu", compute_type="int8")
+            segments, _info = model.transcribe(str(audio_path))
             return [
-                DialogSegment(text=str(s.get("text", "")).strip(), start=float(s["start"]), end=float(s["end"]))
-                for s in result.get("segments", [])
-                if str(s.get("text", "")).strip()
+                DialogSegment(text=seg.text.strip(), start=float(seg.start), end=float(seg.end))
+                for seg in segments
+                if seg.text.strip()
             ]
         except Exception as exc:  # noqa: BLE001 - Whisper absence should not kill the pipeline.
             logger.warning("Whisper transcription unavailable: %s", exc)

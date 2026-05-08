@@ -1,3 +1,11 @@
+[project]
+name = "lol-clip-pipeline"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.lol_clip_app]
+python_requires = ">=3.12"
+
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 pythonpath = ["."]
