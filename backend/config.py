@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+MINIMAP_ICONS_DIR = PROJECT_ROOT / "data" / "minimap_icons"
+MANIFEST_PATH = MINIMAP_ICONS_DIR / "champions_manifest.json"
+
+MINIMAP_CROP_X_PCT = 0.82
+MINIMAP_CROP_Y_PCT = 0.75
+
+HOUGH_MIN_RADIUS = 8
+HOUGH_MAX_RADIUS = 20
+HOUGH_PARAM1 = 50
+HOUGH_PARAM2 = 18
+HOUGH_MIN_DIST = 20
+
+TEMPLATE_MATCH_CONFIRM = 0.55
+TEMPLATE_MATCH_UNCERTAIN = 0.35
+
+FIGHT_CONFIDENCE_THRESHOLD = 0.50
+FIGHT_MIN_DURATION = 4.0
+FIGHT_MAX_DURATION = 20.0
+FIGHT_MERGE_GAP_SEC = 1.5
+DIALOG_EXTENSION_WINDOW = 3.0
+DIALOG_PADDING = 0.5
+MAX_CLIP_DURATION = 35.0
+
+CROP_W = 810
+CROP_H = 1080
+CROP_Y = 0
+PLAYER_SAFE_LEFT_PX = 121
+PLAYER_SAFE_RIGHT_PX = 688
+KEYFRAME_INTERVAL_SEC = 0.25
+GAUSSIAN_SIGMA = 6
+MAX_PAN_SPEED_PX = 40
+LOW_FLOW_THRESHOLD = 500
+BLEND_1V1 = (0.30, 0.45, 0.25)
+BLEND_1VN = (0.25, 0.40, 0.35)
+BLEND_NVN = (0.30, 0.35, 0.35)
+
+OUTPUT_WIDTH = 1080
+OUTPUT_HEIGHT = 1440
+OUTPUT_FPS = 60
+FFMPEG_CRF = 23
+FFMPEG_PRESET = "fast"
+CROP_QUANTIZE_THRESHOLD = 5
+
+VIDEOMAE_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_best.pt"
+LLAMA_MODEL_PATH = PROJECT_ROOT / "models" / "llama-3-8b-instruct.Q4_K_M.gguf"
+CAPTION_TIMEOUT_SEC = 90
+PLAYER_NAME = "Aaplay44"
+
+_APPDATA_BASE = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+APPDATA_DIR = _APPDATA_BASE / "LoLClipApp"
+TEMP_DIR = APPDATA_DIR / "temp"
+LOG_DIR = APPDATA_DIR / "logs"
+OUTPUT_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "LoLClipApp"
+DB_PATH = APPDATA_DIR / "lol_clip_app.sqlite3"
+
+CAPTION_SYSTEM_PROMPT = (
+    "You are a viral gaming content creator specializing in League of Legends "
+    "TikTok and Instagram Reels. You write captions that maximize engagement, "
+    "views, and follows. You understand gaming culture, LoL memes, champion lore, "
+    "and what makes short-form gaming content go viral. You never use generic "
+    "phrases. You never hallucinate champion names."
+)
