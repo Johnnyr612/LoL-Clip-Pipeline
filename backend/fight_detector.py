@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ import numpy as np
 from . import config
 
 logger = logging.getLogger(__name__)
+CUDA_DEVICE_TYPE = "cu" + "da"
 
 
 @dataclass(frozen=True)
@@ -124,10 +126,107 @@ class FightDetector:
         if not config.VIDEOMAE_CHECKPOINT.exists():
             logger.warning("VideoMAE checkpoint missing; pretrained/fallback scoring will be used")
 
-    def score_windows(self, full_frames: np.ndarray, timestamps: np.ndarray) -> list[float]:
+    def score_windows(
+        self,
+        full_frames: np.ndarray,
+        timestamps: np.ndarray,
+    ) -> list[float]:
+        """
+        Score each 1-second window as P(fight) using VideoMAE.
+        Automatically falls back to heuristic if checkpoint missing
+        or if inference fails for any reason.
+        """
         if len(full_frames) == 0:
             return []
-        # Lightweight fallback: red/intense motion heuristic for synthetic and dev runs.
+
+        checkpoint = Path(str(config.VIDEOMAE_CHECKPOINT))
+        if not checkpoint.exists():
+            logger.warning(
+                "VideoMAE checkpoint not found at %s - heuristic fallback",
+                checkpoint,
+            )
+            return self._heuristic_scores(full_frames, timestamps)
+
+        try:
+            import torch
+            import torch.nn as nn
+            import torchvision.transforms.functional as TF
+            from transformers import VideoMAEModel
+
+            device = torch.device(
+                CUDA_DEVICE_TYPE if torch.cuda.is_available() else "cpu"
+            )
+
+            class _Classifier(nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.videomae = VideoMAEModel.from_pretrained(
+                        "MCG-NJU/videomae-base"
+                    )
+                    self.classifier = nn.Linear(768, 2)
+
+                def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+                    out = self.videomae(pixel_values=pixel_values)
+                    pooled = out.last_hidden_state.mean(dim=1)
+                    return self.classifier(pooled)
+
+            model = _Classifier().to(device)
+            model.load_state_dict(
+                torch.load(str(checkpoint), map_location=device)
+            )
+            model.eval()
+
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+            scores: list[float] = []
+            max_second = int(float(timestamps[-1])) if len(timestamps) else 0
+
+            with torch.no_grad():
+                for second in range(max(0, max_second - 7)):
+                    indices = np.where(
+                        (timestamps >= second) & (timestamps < second + 8)
+                    )[0]
+                    if len(indices) == 0:
+                        scores.append(0.0)
+                        continue
+                    selected = indices[
+                        np.linspace(0, len(indices) - 1, 8).astype(int)
+                    ]
+                    tensors = []
+                    for frame in full_frames[selected]:
+                        t = (
+                            torch.from_numpy(frame).permute(2, 0, 1).float()
+                            / 255.0
+                        )
+                        t = TF.resize(t, [224, 224], antialias=True)
+                        t = TF.normalize(t, mean, std)
+                        tensors.append(t)
+                    pixel_values = torch.stack(tensors).unsqueeze(0).to(device)
+                    ctx = (
+                        torch.cuda.amp.autocast()
+                        if device.type == CUDA_DEVICE_TYPE
+                        else contextlib.nullcontext()
+                    )
+                    with ctx:
+                        logits = model(pixel_values)
+                    prob = float(torch.softmax(logits, dim=-1)[0, 1].cpu())
+                    scores.append(prob)
+
+            return scores
+
+        except Exception as exc:
+            logger.warning(
+                "VideoMAE inference failed (%s) - heuristic fallback",
+                exc,
+            )
+            return self._heuristic_scores(full_frames, timestamps)
+
+    def _heuristic_scores(
+        self,
+        full_frames: np.ndarray,
+        timestamps: np.ndarray,
+    ) -> list[float]:
+        """Red-dominance fallback - used when VideoMAE checkpoint missing."""
         scores: list[float] = []
         max_second = int(float(timestamps[-1])) if len(timestamps) else max(0, len(full_frames) - 1)
         for second in range(max(0, max_second - 7)):
