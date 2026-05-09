@@ -4,16 +4,19 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import config, models
 from .logging_config import setup_logging
 from .pipeline import ClipPipeline, InputValidationError
 from .trainer import TrainingCoordinator
+from .uploader import UploadResult, publish_instagram_job, publish_tiktok_job
 
 logging.basicConfig(level=logging.INFO)
 setup_logging()
@@ -33,6 +36,17 @@ app.mount("/outputs", StaticFiles(directory=str(config.OUTPUT_DIR)), name="outpu
 job_semaphore = asyncio.Semaphore(2)
 pipeline: ClipPipeline | None = None
 trainer = TrainingCoordinator()
+
+
+class TrainRequest(BaseModel):
+    clips_dir: str
+    labels: str
+    epochs: int = 25
+    batch_size: Optional[int] = None
+
+
+class UploadRequest(BaseModel):
+    job_id: str
 
 
 @app.on_event("startup")
@@ -94,8 +108,13 @@ async def process_existing(payload: dict) -> dict:
 
 
 @app.post("/train")
-async def start_training() -> dict:
-    run_id = await trainer.start()
+async def start_training(req: TrainRequest) -> dict:
+    run_id = await trainer.start(
+        clips_dir=Path(req.clips_dir),
+        labels=Path(req.labels),
+        epochs=req.epochs,
+        batch_size=req.batch_size,
+    )
     return {"run_id": run_id}
 
 
@@ -106,3 +125,33 @@ async def train_stream() -> StreamingResponse:
             yield f"data: {json.dumps(metric)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.post("/upload/tiktok")
+async def upload_tiktok(req: UploadRequest) -> dict:
+    job = await models.get_job(config.DB_PATH, req.job_id)
+    if not job:
+        return {"status": "error", "detail": "Job not found"}
+    try:
+        result = await publish_tiktok_job(job)
+        return _upload_response(result)
+    except Exception as exc:  # noqa: BLE001 - upload routes always return structured responses.
+        return {"status": "error", "detail": str(exc)}
+
+
+@app.post("/upload/instagram")
+async def upload_instagram(req: UploadRequest) -> dict:
+    job = await models.get_job(config.DB_PATH, req.job_id)
+    if not job:
+        return {"status": "error", "detail": "Job not found"}
+    try:
+        result = await publish_instagram_job(job)
+        return _upload_response(result)
+    except Exception as exc:  # noqa: BLE001 - upload routes always return structured responses.
+        return {"status": "error", "detail": str(exc)}
+
+
+def _upload_response(result: UploadResult) -> dict:
+    if result.ok:
+        return {"status": "ok", "post_url": result.public_url or ""}
+    return {"status": "error", "detail": json.dumps(result.raw_response)}

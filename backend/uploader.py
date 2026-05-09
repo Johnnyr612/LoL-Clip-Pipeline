@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -15,6 +17,86 @@ class UploadResult:
     public_url: str | None
     raw_response: dict[str, Any]
     auth_required: bool = False
+
+
+def caption_for_platform(captions_value: Any, platform: str) -> str:
+    if isinstance(captions_value, str):
+        try:
+            captions = json.loads(captions_value)
+        except json.JSONDecodeError:
+            return captions_value
+    elif isinstance(captions_value, dict):
+        captions = captions_value
+    else:
+        captions = {}
+
+    platform_payload = captions.get(platform, {})
+    if isinstance(platform_payload, dict):
+        caption = platform_payload.get("caption")
+        hashtags = platform_payload.get("hashtags", [])
+        if isinstance(caption, str) and isinstance(hashtags, list):
+            tags = " ".join(str(tag) for tag in hashtags)
+            return f"{caption}\n\n{tags}".strip()
+        if isinstance(caption, str):
+            return caption
+    return ""
+
+
+async def publish_tiktok_job(job: dict[str, Any]) -> UploadResult:
+    output_path = _job_output_path(job)
+    if output_path is None:
+        return UploadResult("tiktok", False, None, {"error": "missing_output_path"})
+    access_token = os.environ.get("TIKTOK_ACCESS_TOKEN")
+    if not access_token:
+        return UploadResult(
+            "tiktok",
+            False,
+            None,
+            {"error": "missing_tiktok_access_token"},
+            auth_required=True,
+        )
+    caption = caption_for_platform(job.get("captions"), "tiktok")
+    return await TikTokClient(access_token).upload_and_publish(output_path, caption)
+
+
+async def publish_instagram_job(job: dict[str, Any]) -> UploadResult:
+    output_path = _job_output_path(job)
+    if output_path is None:
+        return UploadResult(
+            "instagram",
+            False,
+            None,
+            {"error": "missing_output_path"},
+        )
+    access_token = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
+    ig_user_id = os.environ.get("INSTAGRAM_USER_ID")
+    public_base_url = os.environ.get("PUBLIC_OUTPUT_BASE_URL")
+    if not access_token:
+        return UploadResult(
+            "instagram",
+            False,
+            None,
+            {"error": "missing_instagram_access_token"},
+            auth_required=True,
+        )
+    if not ig_user_id:
+        return UploadResult(
+            "instagram",
+            False,
+            None,
+            {"error": "missing_instagram_user_id"},
+            auth_required=True,
+        )
+    if not public_base_url:
+        return UploadResult(
+            "instagram",
+            False,
+            None,
+            {"error": "missing_public_output_base_url"},
+        )
+    video_url = f"{public_base_url.rstrip('/')}/{output_path.name}"
+    caption = caption_for_platform(job.get("captions"), "instagram")
+    return await InstagramClient(access_token, ig_user_id).upload_and_publish(video_url, caption)
 
 
 class TikTokClient:
@@ -77,3 +159,13 @@ def _safe_json(response: httpx.Response) -> dict[str, Any]:
         return response.json()
     except Exception:  # noqa: BLE001
         return {"status_code": response.status_code, "text": response.text}
+
+
+def _job_output_path(job: dict[str, Any]) -> Optional[Path]:
+    raw_path = job.get("output_path")
+    if not raw_path:
+        return None
+    output_path = Path(str(raw_path))
+    if not output_path.exists():
+        return None
+    return output_path

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
@@ -34,7 +34,7 @@ class TrainingCoordinator:
         clips_dir: Path | None = None,
         labels: Path | None = None,
         epochs: int = 25,
-        batch_size: int = 4,
+        batch_size: Optional[int] = None,
         output_dir: Path | None = None,
     ) -> str:
         if self.process and self.process.poll() is None:
@@ -55,11 +55,11 @@ class TrainingCoordinator:
             self.run_id,
             "--epochs",
             str(epochs),
-            "--batch-size",
-            str(batch_size),
             "--output-dir",
             str(resolved_output_dir),
         ]
+        if batch_size is not None:
+            command.extend(["--batch-size", str(batch_size)])
         if clips_dir is not None:
             command.extend(["--clips-dir", str(clips_dir.expanduser().resolve())])
         if labels is not None:
@@ -81,7 +81,7 @@ class TrainingCoordinator:
                 yield metric
                 return
             yield metric
-            await asyncio.sleep(30)
+            await asyncio.sleep(2)
 
 
 def get_mig_device_uuid(slice_index: int) -> str:
