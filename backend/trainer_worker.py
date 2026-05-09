@@ -49,7 +49,7 @@ except ImportError:
     from backend import config
 
 logger = logging.getLogger(__name__)
-CUDA_DEVICE_TYPE = "cu" + "da"
+CUDA_DEVICE_TYPE = "cuda"
 
 
 class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
