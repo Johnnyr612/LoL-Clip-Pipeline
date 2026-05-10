@@ -61,7 +61,7 @@ def boundaries_from_scores(scores: Sequence[float], source_duration: float) -> t
     while right + 1 < len(scores) and scores[right + 1] >= config.FIGHT_CONFIDENCE_THRESHOLD:
         right += 1
     fight_start = float(left)
-    fight_end = float(right + 8.0)
+    fight_end = float(right + 16.0)
     duration = fight_end - fight_start
     if duration < config.FIGHT_MIN_DURATION:
         pad = (config.FIGHT_MIN_DURATION - duration) / 2
@@ -182,15 +182,15 @@ class FightDetector:
             max_second = int(float(timestamps[-1])) if len(timestamps) else 0
 
             with torch.no_grad():
-                for second in range(max(0, max_second - 7)):
+                for second in range(max(0, max_second - 15)):
                     indices = np.where(
-                        (timestamps >= second) & (timestamps < second + 8)
+                        (timestamps >= second) & (timestamps < second + 16)
                     )[0]
                     if len(indices) == 0:
                         scores.append(0.0)
                         continue
                     selected = indices[
-                        np.linspace(0, len(indices) - 1, 8).astype(int)
+                        np.linspace(0, len(indices) - 1, 16).astype(int)
                     ]
                     tensors = []
                     for frame in full_frames[selected]:
@@ -229,8 +229,8 @@ class FightDetector:
         """Red-dominance fallback - used when VideoMAE checkpoint missing."""
         scores: list[float] = []
         max_second = int(float(timestamps[-1])) if len(timestamps) else max(0, len(full_frames) - 1)
-        for second in range(max(0, max_second - 7)):
-            frame_indices = np.where((timestamps >= second) & (timestamps < second + 8))[0]
+        for second in range(max(0, max_second - 15)):
+            frame_indices = np.where((timestamps >= second) & (timestamps < second + 16))[0]
             if len(frame_indices) == 0:
                 scores.append(0.0)
                 continue

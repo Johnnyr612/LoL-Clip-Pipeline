@@ -75,20 +75,20 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
                 continue
 
             frames = self._read_one_fps_frames(clip_path)
-            if len(frames) < 8:
+            if len(frames) < 16:
                 continue
 
             frame_by_second = {int(timestamp): frame for frame, timestamp in frames}
             seconds = sorted(frame_by_second)
-            if len(seconds) < 8:
+            if len(seconds) < 16:
                 continue
 
             total_seconds = max(seconds) + 1
             fight_start = float(label.get("fight_start", 0.0))
             fight_end = float(label.get("fight_end", 0.0))
 
-            for start_second in range(0, max(0, total_seconds - 7)):
-                window_seconds = range(start_second, start_second + 8)
+            for start_second in range(0, max(0, total_seconds - 15)):
+                window_seconds = range(start_second, start_second + 16)
                 if any(second not in frame_by_second for second in window_seconds):
                     continue
                 overlap = sum(
@@ -96,7 +96,7 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
                     for second in window_seconds
                     if fight_start <= float(second) <= fight_end
                 )
-                overlap_pct = overlap / 8.0
+                overlap_pct = overlap / 16.0
                 if overlap_pct >= 0.50:
                     fight_samples.append(
                         ([frame_by_second[second] for second in window_seconds], 1)
