@@ -61,12 +61,12 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
     ) -> None:
         self.clips_dir = clips_dir
         self.labels = labels[:5] if smoke_test else labels
-        self.samples: list[tuple[list[np.ndarray], int]] = []
+        self.sample_index: list[tuple[Path, int, int]] = []
         self._prepare_samples()
 
     def _prepare_samples(self) -> None:
-        fight_samples: list[tuple[list[np.ndarray], int]] = []
-        non_fight_samples: list[tuple[list[np.ndarray], int]] = []
+        fight_samples: list[tuple[Path, int, int]] = []
+        non_fight_samples: list[tuple[Path, int, int]] = []
 
         for label in self.labels:
             filename = str(label.get("filename", ""))
@@ -74,23 +74,18 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
             if clip_path.suffix.lower() != ".mp4" or not clip_path.exists():
                 continue
 
-            frames = self._read_one_fps_frames(clip_path)
-            if len(frames) < 16:
-                continue
-
-            frame_by_second = {int(timestamp): frame for frame, timestamp in frames}
-            seconds = sorted(frame_by_second)
-            if len(seconds) < 16:
-                continue
-
-            total_seconds = max(seconds) + 1
             fight_start = float(label.get("fight_start", 0.0))
             fight_end = float(label.get("fight_end", 0.0))
+            duration_value = (
+                label.get("duration")
+                or label.get("source_duration")
+                or label.get("clip_duration")
+                or max(fight_start, fight_end) + 16.0
+            )
+            total_seconds = max(16, int(np.ceil(float(duration_value))))
 
             for start_second in range(0, max(0, total_seconds - 15)):
                 window_seconds = range(start_second, start_second + 16)
-                if any(second not in frame_by_second for second in window_seconds):
-                    continue
                 overlap = sum(
                     1
                     for second in window_seconds
@@ -98,65 +93,50 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
                 )
                 overlap_pct = overlap / 16.0
                 if overlap_pct >= 0.50:
-                    fight_samples.append(
-                        ([frame_by_second[second] for second in window_seconds], 1)
-                    )
+                    fight_samples.append((clip_path, start_second, 1))
                 elif overlap_pct < 0.10:
-                    non_fight_samples.append(
-                        ([frame_by_second[second] for second in window_seconds], 0)
-                    )
+                    non_fight_samples.append((clip_path, start_second, 0))
 
         rng = random.Random(42)
         rng.shuffle(fight_samples)
         rng.shuffle(non_fight_samples)
         minority_count = min(len(fight_samples), len(non_fight_samples))
         if minority_count == 0:
-            self.samples = []
+            self.sample_index = []
             return
-        self.samples = (
+        self.sample_index = (
             fight_samples[:minority_count] + non_fight_samples[:minority_count]
         )
-        rng.shuffle(self.samples)
-
-    def _read_one_fps_frames(self, clip_path: Path) -> list[tuple[np.ndarray, float]]:
-        capture = cv2.VideoCapture(str(clip_path))
-        if not capture.isOpened():
-            logger.warning("Unable to open clip %s", clip_path)
-            return []
-
-        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 120.0)
-        if source_fps <= 0.0:
-            source_fps = 120.0
-        sample_every = max(1, int(source_fps))
-        frames: list[tuple[np.ndarray, float]] = []
-        frame_index = 0
-        while True:
-            ok, frame_bgr = capture.read()
-            if not ok:
-                break
-            if frame_index % sample_every == 0:
-                timestamp = frame_index / source_fps
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                frames.append((frame_rgb, timestamp))
-            frame_index += 1
-        capture.release()
-        return frames
+        rng.shuffle(self.sample_index)
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.sample_index)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
-        frames, label = self.samples[index]
+        clip_path, start_second, label = self.sample_index[index]
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         tensors: list[torch.Tensor] = []
+        capture = cv2.VideoCapture(str(clip_path))
+        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 120.0)
+        if source_fps <= 0.0:
+            source_fps = 120.0
 
-        for frame_rgb in frames:
+        for second_offset in range(16):
+            target_second = start_second + second_offset
+            frame_number = int(target_second * source_fps)
+            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ok, frame_bgr = capture.read()
+            if ok:
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            else:
+                frame_rgb = np.zeros((224, 224, 3), dtype=np.uint8)
             resized = cv2.resize(frame_rgb, (224, 224), interpolation=cv2.INTER_AREA)
             normalized = (resized.astype(np.float32) / 255.0 - mean) / std
             chw = np.transpose(normalized, (2, 0, 1))
             tensors.append(torch.from_numpy(chw).float())
 
+        capture.release()
         return torch.stack(tensors), int(label)
 
 
@@ -263,7 +243,7 @@ def main() -> int:
         print("No usable training or validation windows found", file=sys.stderr)
         return 1
 
-    num_workers = 0 if platform.system() == "Windows" else 2
+    num_workers = 0
     train_loader = _create_loader(train_dataset, batch_size, num_workers, True)
     val_loader = _create_loader(val_dataset, batch_size, num_workers, False)
 
