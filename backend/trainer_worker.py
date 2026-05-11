@@ -50,6 +50,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 CUDA_DEVICE_TYPE = "cuda"
+PRECOMPUTED_DIR = Path("precomputed")
 
 
 class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
@@ -117,26 +118,40 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         tensors: list[torch.Tensor] = []
-        capture = cv2.VideoCapture(str(clip_path))
-        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 120.0)
-        if source_fps <= 0.0:
-            source_fps = 120.0
 
-        for second_offset in range(16):
-            target_second = start_second + second_offset
-            frame_number = int(target_second * source_fps)
-            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-            ok, frame_bgr = capture.read()
-            if ok:
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            else:
-                frame_rgb = np.zeros((224, 224, 3), dtype=np.uint8)
-            resized = cv2.resize(frame_rgb, (224, 224), interpolation=cv2.INTER_AREA)
-            normalized = (resized.astype(np.float32) / 255.0 - mean) / std
-            chw = np.transpose(normalized, (2, 0, 1))
-            tensors.append(torch.from_numpy(chw).float())
+        precomputed_path = PRECOMPUTED_DIR / (clip_path.stem + ".npy")
+        if precomputed_path.exists():
+            frames = np.load(str(precomputed_path), mmap_mode="r")
+            for second_offset in range(16):
+                frame_index = min(start_second + second_offset, len(frames) - 1)
+                frame = frames[frame_index].copy()
+                normalized = (frame.astype(np.float32) / 255.0 - mean) / std
+                chw = np.transpose(normalized, (2, 0, 1))
+                tensors.append(torch.from_numpy(chw).float())
+        else:
+            capture = cv2.VideoCapture(str(clip_path))
+            source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 120.0)
+            if source_fps <= 0.0:
+                source_fps = 120.0
+            for second_offset in range(16):
+                target_second = start_second + second_offset
+                frame_number = int(target_second * source_fps)
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                ok, frame_bgr = capture.read()
+                if ok:
+                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                else:
+                    frame_rgb = np.zeros((224, 224, 3), dtype=np.uint8)
+                resized = cv2.resize(
+                    frame_rgb,
+                    (224, 224),
+                    interpolation=cv2.INTER_AREA,
+                )
+                normalized = (resized.astype(np.float32) / 255.0 - mean) / std
+                chw = np.transpose(normalized, (2, 0, 1))
+                tensors.append(torch.from_numpy(chw).float())
+            capture.release()
 
-        capture.release()
         return torch.stack(tensors), int(label)
 
 
@@ -235,10 +250,14 @@ def main() -> int:
         f"epochs={epochs} batch_size={batch_size} output_dir={output_dir}",
         flush=True,
     )
+    print("Building dataset index...", flush=True)
 
     train_labels, val_labels = _split_labels(all_labels)
     train_dataset = LoLFightDataset(args.clips_dir, train_labels, args.smoke_test)
+    print(f"Train samples: {len(train_dataset)}", flush=True)
     val_dataset = LoLFightDataset(args.clips_dir, val_labels, args.smoke_test)
+    print(f"Val samples: {len(val_dataset)}", flush=True)
+    print("Starting training loop...", flush=True)
     if len(train_dataset) == 0 or len(val_dataset) == 0:
         print("No usable training or validation windows found", file=sys.stderr)
         return 1
@@ -287,6 +306,13 @@ def main() -> int:
                     loss = (
                         F.cross_entropy(logits, labels)
                         / gradient_accumulation_steps
+                    )
+                if batch_idx % 10 == 0:
+                    print(
+                        f"  Epoch {epoch}/{epochs} "
+                        f"batch {batch_idx}/{len(train_loader)} "
+                        f"loss={loss.item() * gradient_accumulation_steps:.4f}",
+                        flush=True,
                     )
 
                 if scaler:
