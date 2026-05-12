@@ -64,7 +64,7 @@ def _build_prompt(
 Clip details:
 - Player champion: {player_champion}
 - Enemies fought: {enemies}
-- Champions seen on original minimap before crop: {minimap_context}
+- Champions actively fighting or collapsing on the fight from original minimap/HUD: {minimap_context}
 - Fight type: {fight_type}
 - Fight duration: {fight_duration:.1f} seconds
 - Spoken lines detected: {dialog_text or 'none'}
@@ -79,7 +79,7 @@ Rules:
 - Instagram: body max 500 chars, slightly more narrative
 - Hashtag block at end: 5 platform tags + 5 LoL-specific tags
 - Never write: 'Check this out', 'Amazing', 'Watch this', 'Incredible'
-- Use minimap champions as context only; mention a champion only when it makes the caption sharper
+- Use only the listed active-fight champions; do not pull in unrelated champions from elsewhere on the map
 
 Respond with valid JSON only, no markdown, no preamble:
 {{"caption": "...", "hashtags": ["..."], "hook_line": "..."}}"""

@@ -259,6 +259,18 @@ class MinimapDetector:
                 best_score = score
         return best_name, best_score
 
+    def detect_player_hud_champion(self, frame: np.ndarray) -> tuple[str, float]:
+        h, w = frame.shape[:2]
+        # Standard LoL HUD portrait, scaled from a 1920x1080 capture.
+        x1, y1 = int(w * 0.315), int(h * 0.900)
+        x2, y2 = int(w * 0.370), h
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return "unknown", -1.0
+        square = _center_square(crop)
+        gray = self._center_crop_gray(cv2.resize(square, (120, 120), interpolation=cv2.INTER_AREA))
+        return self.match_champion(gray)
+
     def detect_icons(self, minimap_frame: np.ndarray) -> list[RawIconDetection]:
         gray = cv2.cvtColor(minimap_frame, cv2.COLOR_RGB2GRAY)
         circles = cv2.HoughCircles(
@@ -307,12 +319,15 @@ class MinimapDetector:
         fight_start: float,
         fight_end: float,
         player_positions: list[Optional[tuple[float, float]]],
+        player_champion: str | None = None,
     ) -> FightParticipants:
         tracks: list[list[RawIconDetection]] = []
         last_points: list[tuple[int, int]] = []
-        for frame_detections, timestamp in zip(detections_per_frame, timestamps):
+        for frame_index, (frame_detections, timestamp) in enumerate(zip(detections_per_frame, timestamps)):
             if not fight_start <= float(timestamp) <= fight_end:
                 continue
+            frame_player_pos = player_positions[frame_index] if frame_index < len(player_positions) else None
+            frame_detections = _fight_relevant_detections(frame_detections, frame_player_pos)
             used_tracks: set[int] = set()
             for detection in frame_detections:
                 point = np.array(detection.circle_center)
@@ -335,7 +350,7 @@ class MinimapDetector:
 
         flags: list[str] = []
         if not tracks:
-            unknown = ChampionResult("unknown_champion_0", 0.0, "ally", (0.5, 0.5), True)
+            unknown = ChampionResult(_known_player_champion(player_champion, "unknown_champion_0"), 0.0, "ally", (0.5, 0.5), True)
             return FightParticipants(unknown, [], [], "1v1", ["no_champions_identified"])
 
         results: list[ChampionResult] = []
@@ -365,7 +380,7 @@ class MinimapDetector:
                 flags.append("player_pos_low_confidence")
 
         player = ChampionResult(
-            results[player_idx].champion_name,
+            _known_player_champion(player_champion, results[player_idx].champion_name),
             results[player_idx].confidence,
             results[player_idx].team,
             results[player_idx].mean_pos,
@@ -377,6 +392,52 @@ class MinimapDetector:
             flags.append("no_champions_identified")
         fight_type = _fight_type(player, allies, enemies)
         return FightParticipants(player, allies, enemies, fight_type, flags)
+
+
+def _center_square(image: np.ndarray) -> np.ndarray:
+    h, w = image.shape[:2]
+    side = min(h, w)
+    y = max((h - side) // 2, 0)
+    x = max((w - side) // 2, 0)
+    return image[y : y + side, x : x + side]
+
+
+def _known_player_champion(player_champion: str | None, fallback: str) -> str:
+    if player_champion and not player_champion.startswith("unknown"):
+        return player_champion
+    return fallback
+
+
+def _fight_relevant_detections(
+    detections: list[RawIconDetection],
+    player_position: tuple[float, float] | None,
+) -> list[RawIconDetection]:
+    if player_position is None:
+        return [d for d in detections if _is_usable_detection(d, detections)]
+
+    center = np.array(player_position, dtype=np.float32)
+    relevant: list[RawIconDetection] = []
+    for detection in detections:
+        distance = float(np.linalg.norm(np.array(detection.circle_center, dtype=np.float32) - center))
+        if distance > config.MINIMAP_FIGHT_RADIUS_PX:
+            continue
+        if not _is_usable_detection(detection, detections):
+            continue
+        relevant.append(detection)
+    return relevant
+
+
+def _is_usable_detection(detection: RawIconDetection, frame_detections: list[RawIconDetection]) -> bool:
+    if not detection.is_uncertain and not detection.champion_name.startswith("unknown"):
+        return True
+    for other in frame_detections:
+        if other is detection:
+            continue
+        distance = float(np.linalg.norm(np.array(detection.circle_center) - np.array(other.circle_center)))
+        overlap_distance = (detection.radius + other.radius) * config.MINIMAP_OVERLAP_DISTANCE_MULTIPLIER
+        if distance < overlap_distance:
+            return False
+    return True
 
 
 def _merge_duplicate_champions(results: list[ChampionResult]) -> list[ChampionResult]:

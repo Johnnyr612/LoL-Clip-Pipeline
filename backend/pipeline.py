@@ -137,14 +137,6 @@ class ClipPipeline:
                 _position_to_pixels(player_positions[int(i)], bundle.minimap_frames[int(i)].shape)
                 for i in minimap_indices
             ]
-            participants = self.minimap_detector.aggregate_detections(
-                detections,
-                detection_timestamps,
-                0,
-                validation.duration,
-                sampled_player_positions,
-            )
-            flags.extend(participants.flags)
             if self.minimap_detector.minimap_boundary_estimated:
                 flags.append("minimap_boundary_estimated")
             await update_job_progress(
@@ -152,7 +144,7 @@ class ClipPipeline:
                 job_id,
                 "stage2_minimap",
                 100,
-                f"Detected: {participants.fight_type}",
+                "Minimap scan complete",
             )
 
             current_stage = "stage3_fight"
@@ -176,12 +168,30 @@ class ClipPipeline:
             dialog = self.fight_detector.transcribe(bundle.audio_path)
             trim_result = apply_dialog_extension(fight_start, fight_end, validation.duration, dialog)
             trim = replace(trim_result, flags=fight_flags + trim_result.flags)
+            player_champion, player_champion_score = _detect_player_champion(
+                self.minimap_detector,
+                bundle.full_frames,
+                bundle.timestamps_full,
+                trim.clip_start,
+                trim.clip_end,
+            )
+            if player_champion_score < config.HUD_PLAYER_MATCH_CONFIRM:
+                flags.append("player_hud_champion_low_confidence")
+            participants = self.minimap_detector.aggregate_detections(
+                detections,
+                detection_timestamps,
+                max(0.0, trim.clip_start - config.MINIMAP_CONTEXT_BEFORE_FIGHT_SEC),
+                min(validation.duration, trim.clip_end + config.MINIMAP_CONTEXT_AFTER_FIGHT_SEC),
+                sampled_player_positions,
+                player_champion if player_champion_score >= config.HUD_PLAYER_MATCH_CONFIRM else None,
+            )
+            flags.extend(participants.flags)
             await update_job_progress(
                 db_path,
                 job_id,
                 "stage3_fight",
                 100,
-                "Fight boundaries confirmed with dialog detection",
+                f"Fight confirmed: {participants.player.champion_name} {participants.fight_type}",
             )
             flags.extend(trim.flags)
 
@@ -333,6 +343,34 @@ def _normalize_enemy_positions(enemies: list[ChampionResult]) -> list[ChampionRe
             y = y / 540.0
         normalized.append(ChampionResult(enemy.champion_name, enemy.confidence, enemy.team, (float(x), float(y)), enemy.is_player))
     return normalized
+
+
+def _detect_player_champion(
+    detector: MinimapDetector,
+    frames: np.ndarray,
+    timestamps: np.ndarray,
+    clip_start: float,
+    clip_end: float,
+) -> tuple[str, float]:
+    if len(frames) == 0 or len(timestamps) == 0:
+        return "unknown", -1.0
+    mask = (timestamps >= clip_start) & (timestamps <= clip_end)
+    indexes = np.flatnonzero(mask)
+    if len(indexes) == 0:
+        indexes = np.array([int(np.argmin(np.abs(timestamps - clip_start)))])
+    if len(indexes) > 8:
+        indexes = indexes[np.linspace(0, len(indexes) - 1, 8, dtype=int)]
+
+    scores: dict[str, list[float]] = {}
+    for index in indexes:
+        name, score = detector.detect_player_hud_champion(frames[int(index)])
+        if name.startswith("unknown"):
+            continue
+        scores.setdefault(name, []).append(score)
+    if not scores:
+        return "unknown", -1.0
+    name, values = max(scores.items(), key=lambda item: (len(item[1]), float(np.mean(item[1]))))
+    return name, float(np.mean(values))
 
 
 def _position_to_pixels(position: tuple[float, float] | None, frame_shape: tuple[int, ...]) -> tuple[float, float] | None:

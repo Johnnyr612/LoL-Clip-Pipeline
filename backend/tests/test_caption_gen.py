@@ -14,7 +14,7 @@ def test_caption_prompt_includes_original_minimap_context():
         "tiktok",
     )
 
-    assert "Champions seen on original minimap before crop: Aatrox, Ahri, Thresh" in prompt
+    assert "Champions actively fighting or collapsing on the fight from original minimap/HUD: Aatrox, Ahri, Thresh" in prompt
     assert "Enemies fought: Ahri" in prompt
 
 

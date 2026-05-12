@@ -90,8 +90,8 @@ def test_aggregation_dedupes_champion_tracks(detector: MinimapDetector):
         [
             RawIconDetection((50, 50), 12, "ally", "Aatrox", 0.9, False),
             RawIconDetection((120, 120), 12, "ally", "Aatrox", 0.8, False),
-            RawIconDetection((220, 220), 12, "enemy", "Ahri", 0.9, False),
-            RawIconDetection((260, 260), 12, "enemy", "Ahri", 0.8, False),
+            RawIconDetection((100, 100), 12, "enemy", "Ahri", 0.9, False),
+            RawIconDetection((115, 115), 12, "enemy", "Ahri", 0.8, False),
         ]
     ]
     result = detector.aggregate_detections(detections, np.array([0]), 0, 1, [(50, 50)])
@@ -99,8 +99,29 @@ def test_aggregation_dedupes_champion_tracks(detector: MinimapDetector):
     assert [enemy.champion_name for enemy in result.enemies] == ["Ahri"]
 
 
+def test_aggregation_filters_champions_far_from_fight(detector: MinimapDetector):
+    detections = [
+        [
+            RawIconDetection((50, 50), 12, "ally", "Aatrox", 0.9, False),
+            RawIconDetection((100, 100), 12, "enemy", "Ahri", 0.9, False),
+            RawIconDetection((300, 250), 12, "enemy", "Thresh", 0.9, False),
+        ]
+    ]
+    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, [(50, 50)])
+    assert [enemy.champion_name for enemy in result.enemies] == ["Ahri"]
+
+
+def test_player_hud_detection(detector: MinimapDetector):
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    icon = np.array(Image.open(config.MINIMAP_ICONS_DIR / "images" / "Aatrox.png").convert("RGB"))
+    frame[972:1080, 604:710] = cv2.resize(icon, (106, 108), interpolation=cv2.INTER_AREA)
+    name, score = detector.detect_player_hud_champion(frame)
+    assert name == "Aatrox"
+    assert score > 0.45
+
+
 def test_augmentation_count(detector: MinimapDetector):
-    assert len(detector.augmented["Aatrox"]) == 96
+    assert len(detector.augmented["Aatrox"]) == 36
 
 
 def test_corrupt_icon_skipped(tmp_path):
