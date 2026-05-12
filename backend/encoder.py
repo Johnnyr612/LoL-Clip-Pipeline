@@ -170,22 +170,17 @@ class VideoEncoder:
             segments = quantize_crop_trajectory(crops, crop_timestamps) or [CropSegment(0.0, clip_end - clip_start, 555)]
             segment_paths: list[Path] = []
             for idx, segment in enumerate(segments):
-                clip_duration = max(0.0, clip_end - clip_start)
-                segment_start = max(0.0, min(clip_duration, segment.start - clip_start))
-                segment_end = max(0.0, min(clip_duration, segment.end - clip_start))
-                duration = segment_end - segment_start
-                if duration <= 0.05:
-                    continue
                 segment_path = temp_dir / f"segment_{idx:04d}.mp4"
+                segment_paths.append(segment_path)
                 vf = f"crop={config.CROP_W}:{config.CROP_H}:{segment.crop_x}:0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"
                 _run_ffmpeg(
                     [
                         ffmpeg,
                         "-y",
                         "-ss",
-                        str(segment_start),
-                        "-t",
-                        str(duration),
+                        str(max(0.0, segment.start - clip_start)),
+                        "-to",
+                        str(max(0.0, segment.end - clip_start)),
                         "-i",
                         str(trimmed),
                         "-map",
@@ -209,38 +204,6 @@ class VideoEncoder:
                         str(segment_path),
                     ]
                 )
-                segment_paths.append(segment_path)
-            if not segment_paths:
-                segment_path = temp_dir / "segment_fallback.mp4"
-                vf = f"crop={config.CROP_W}:{config.CROP_H}:555:0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"
-                _run_ffmpeg(
-                    [
-                        ffmpeg,
-                        "-y",
-                        "-i",
-                        str(trimmed),
-                        "-map",
-                        "0:v:0",
-                        "-map",
-                        "0:a:0?",
-                        "-vf",
-                        vf,
-                        "-r",
-                        str(config.OUTPUT_FPS),
-                        "-c:v",
-                        "libx264",
-                        "-crf",
-                        str(config.FFMPEG_CRF),
-                        "-preset",
-                        config.FFMPEG_PRESET,
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        "192k",
-                        str(segment_path),
-                    ]
-                )
-                segment_paths.append(segment_path)
             concat_list = temp_dir / "concat.txt"
             concat_list.write_text("".join(f"file '{path.as_posix()}'\n" for path in segment_paths), encoding="utf-8")
             _run_ffmpeg([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(final_output)])
