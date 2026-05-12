@@ -126,23 +126,34 @@ def finish_on_kill_or_death(
     timestamps: np.ndarray,
     source_duration: float,
 ) -> TrimResult:
-    event_time, event_flag = _detect_combat_event_time(full_frames, timestamps, trim.fight_start, trim.fight_end)
+    min_clip_end = min(source_duration, trim.clip_start + config.COMBAT_EVENT_MIN_CLIP_DURATION_SEC)
+    target_clip_end = min(source_duration, trim.clip_start + config.COMBAT_EVENT_TARGET_CLIP_DURATION_SEC)
+    max_clip_end = min(source_duration, trim.clip_start + config.MAX_CLIP_DURATION)
+    event_time, event_flag = _detect_combat_event_time(
+        full_frames,
+        timestamps,
+        trim.fight_start,
+        max(trim.fight_end, max_clip_end - config.COMBAT_EVENT_SEARCH_AFTER_FIGHT_SEC),
+        min_event_time=min_clip_end,
+    )
     if event_time is None:
-        return trim
-
-    clip_end = min(source_duration, event_time + config.COMBAT_EVENT_END_PADDING_SEC)
-    clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
-    if clip_end - trim.clip_start < config.COMBAT_EVENT_MIN_CLIP_DURATION_SEC:
+        clip_end = max(trim.clip_end, target_clip_end)
+        clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
+        clip_end = min(clip_end, max_clip_end)
         return TrimResult(
             clip_start=trim.clip_start,
-            clip_end=trim.clip_end,
+            clip_end=round(clip_end, 3),
             fight_start=trim.fight_start,
-            fight_end=trim.fight_end,
-            fight_duration=trim.fight_duration,
+            fight_end=round(max(trim.fight_end, clip_end), 3),
+            fight_duration=round(max(0.0, max(trim.fight_end, clip_end) - trim.fight_start), 3),
             dialog_segments=trim.dialog_segments,
-            flags=[*trim.flags, "combat_event_too_early_ignored"],
+            flags=[*trim.flags, "combat_event_not_confirmed_extended_to_target"],
         )
-    fight_end = min(trim.fight_end, event_time)
+
+    clip_end = min(max_clip_end, event_time + config.COMBAT_EVENT_END_PADDING_SEC)
+    clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
+    clip_end = min(max(clip_end, min_clip_end), max_clip_end)
+    fight_end = max(trim.fight_end, event_time)
     flags = [*trim.flags, event_flag, "clip_end_on_kill_or_death"]
     return TrimResult(
         clip_start=trim.clip_start,
@@ -200,6 +211,7 @@ def _detect_combat_event_time(
     timestamps: np.ndarray,
     fight_start: float,
     fight_end: float,
+    min_event_time: float | None = None,
 ) -> tuple[float | None, str]:
     if len(full_frames) == 0 or len(timestamps) == 0:
         return None, ""
@@ -238,9 +250,13 @@ def _detect_combat_event_time(
             missing_player_run = 0
 
         if engaged and missing_player_run >= config.COMBAT_EVENT_MISSING_FRAMES:
-            return times[max(0, idx - missing_player_run + 1)], "death_event_detected"
+            event_time = times[max(0, idx - missing_player_run + 1)]
+            if min_event_time is None or event_time >= min_event_time:
+                return event_time, "death_event_detected"
         if engaged and missing_enemy_run >= config.COMBAT_EVENT_MISSING_FRAMES:
-            return times[max(0, idx - missing_enemy_run + 1)], "kill_event_detected"
+            event_time = times[max(0, idx - missing_enemy_run + 1)]
+            if min_event_time is None or event_time >= min_event_time:
+                return event_time, "kill_event_detected"
     return None, ""
 
 
