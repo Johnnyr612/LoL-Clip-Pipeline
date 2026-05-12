@@ -115,14 +115,30 @@ class ClipPipeline:
                 10,
                 "Detecting champion icons on minimap...",
             )
-            detections = [self.minimap_detector.detect_icons(frame) for frame in bundle.minimap_frames]
+            stride = max(1, config.MINIMAP_DETECTION_STRIDE)
+            minimap_indices = np.arange(0, len(bundle.minimap_frames), stride)
+            detection_frames = bundle.minimap_frames[minimap_indices]
+            detection_timestamps = bundle.timestamps_mini[minimap_indices]
+            detections = []
+            total_detection_frames = max(len(detection_frames), 1)
+            for index, frame in enumerate(detection_frames):
+                detections.append(self.minimap_detector.detect_icons(frame))
+                if index and index % 15 == 0:
+                    progress = 10 + int((index / total_detection_frames) * 70)
+                    await update_job_progress(
+                        db_path,
+                        job_id,
+                        "stage2_minimap",
+                        min(progress, 80),
+                        f"Scanning minimap frames {index}/{total_detection_frames}...",
+                    )
             player_positions = [self.minimap_detector.find_white_box(frame) for frame in bundle.minimap_frames]
             participants = self.minimap_detector.aggregate_detections(
                 detections,
-                bundle.timestamps_mini,
+                detection_timestamps,
                 0,
                 validation.duration,
-                player_positions,
+                [player_positions[int(i)] for i in minimap_indices],
             )
             flags.extend(participants.flags)
             if self.minimap_detector.minimap_boundary_estimated:

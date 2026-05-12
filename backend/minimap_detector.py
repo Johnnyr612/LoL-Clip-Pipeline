@@ -54,6 +54,9 @@ class MinimapDetector:
         self.key_to_name: dict[str, str] = {}
         self.templates: dict[str, np.ndarray] = {}
         self.augmented: dict[str, list[np.ndarray]] = {}
+        self.base_names: list[str] = []
+        self.base_matrix = np.empty((0, 90 * 90), dtype=np.float32)
+        self.augmented_matrices: dict[str, np.ndarray] = {}
         self._minimap_rect: Optional[Rect] = None
         self.minimap_boundary_estimated = False
 
@@ -82,6 +85,35 @@ class MinimapDetector:
 
             self.templates[name] = self._center_crop_gray(rgb)
             self.augmented[name] = self._augment_template(rgb)
+        self._build_match_indexes()
+
+    def _build_match_indexes(self) -> None:
+        self.base_names = list(self.templates)
+        if self.base_names:
+            self.base_matrix = self._normalize_rows([self.templates[name] for name in self.base_names])
+        self.augmented_matrices = {
+            name: self._normalize_rows(templates)
+            for name, templates in self.augmented.items()
+            if templates
+        }
+
+    @staticmethod
+    def _normalize_rows(images: list[np.ndarray]) -> np.ndarray:
+        if not images:
+            return np.empty((0, 90 * 90), dtype=np.float32)
+        matrix = np.asarray([image.reshape(-1) for image in images], dtype=np.float32)
+        matrix -= matrix.mean(axis=1, keepdims=True)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        return matrix / np.maximum(norms, 1e-6)
+
+    @staticmethod
+    def _normalize_roi(roi_gray: np.ndarray) -> np.ndarray:
+        roi = cv2.resize(roi_gray, (90, 90), interpolation=cv2.INTER_AREA).reshape(-1).astype(np.float32)
+        roi -= float(roi.mean())
+        norm = float(np.linalg.norm(roi))
+        if norm <= 1e-6:
+            return np.zeros_like(roi)
+        return roi / norm
 
     @staticmethod
     def _center_crop_gray(rgb: np.ndarray, crop: int = 90) -> np.ndarray:
@@ -116,9 +148,9 @@ class MinimapDetector:
     def _augment_template(self, rgb: np.ndarray) -> list[np.ndarray]:
         variants: list[np.ndarray] = []
         border_colors = [(220, 35, 35), (35, 110, 235)]
-        blur_sigmas = [0.5, 1.0, 1.5]
-        scales = [0.80, 0.90, 1.00, 1.10]
-        brightness = [0.70, 0.85, 1.00, 1.15]
+        blur_sigmas = [0.5, 1.0]
+        scales = [0.85, 1.00, 1.10]
+        brightness = [0.80, 1.00, 1.15]
         for border in border_colors:
             bordered = self._border_variant(rgb, border)
             for sigma in blur_sigmas:
@@ -202,15 +234,29 @@ class MinimapDetector:
         return "unknown"
 
     def match_champion(self, roi_gray: np.ndarray) -> tuple[str, float]:
-        roi = cv2.resize(roi_gray, (90, 90), interpolation=cv2.INTER_AREA)
+        if self.base_matrix.size == 0:
+            return "unknown", -1.0
+
+        roi = self._normalize_roi(roi_gray)
+        base_scores = self.base_matrix @ roi
+        candidate_count = min(config.MINIMAP_TOP_TEMPLATE_CANDIDATES, len(self.base_names))
+        if candidate_count == len(self.base_names):
+            candidate_indices = np.arange(len(self.base_names))
+        else:
+            candidate_indices = np.argpartition(base_scores, -candidate_count)[-candidate_count:]
         best_name = "unknown"
         best_score = -1.0
-        for name, templates in self.augmented.items():
-            for template in templates:
-                score = float(cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)[0, 0])
-                if score > best_score:
-                    best_name = name
-                    best_score = score
+
+        for idx in candidate_indices:
+            name = self.base_names[int(idx)]
+            augmented = self.augmented_matrices.get(name)
+            if augmented is None or augmented.size == 0:
+                score = float(base_scores[int(idx)])
+            else:
+                score = float(np.max(augmented @ roi))
+            if score > best_score:
+                best_name = name
+                best_score = score
         return best_name, best_score
 
     def detect_icons(self, minimap_frame: np.ndarray) -> list[RawIconDetection]:
@@ -229,7 +275,9 @@ class MinimapDetector:
             return []
 
         detections: list[RawIconDetection] = []
-        for idx, circle in enumerate(np.round(circles[0]).astype(int)):
+        rounded_circles = np.round(circles[0]).astype(int)
+        rounded_circles = sorted(rounded_circles, key=lambda item: int(item[2]), reverse=True)
+        for idx, circle in enumerate(rounded_circles[: config.MINIMAP_MAX_CIRCLES_PER_FRAME]):
             x, y, radius = int(circle[0]), int(circle[1]), int(circle[2])
             x1, y1 = max(0, x - radius), max(0, y - radius)
             x2, y2 = min(minimap_frame.shape[1], x + radius), min(minimap_frame.shape[0], y + radius)
