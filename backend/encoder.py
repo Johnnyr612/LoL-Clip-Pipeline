@@ -28,107 +28,6 @@ def _run_ffmpeg(args: list[str]) -> None:
         raise EncoderError(result.stderr)
 
 
-def _audio_stream_count(path: Path) -> int:
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        return 0
-    result = subprocess.run(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=index",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return 0
-    return len([line for line in result.stdout.splitlines() if line.strip()])
-
-
-def _trim_with_audio(ffmpeg: str, source: Path, output: Path, clip_start: float, clip_end: float) -> None:
-    audio_streams = _audio_stream_count(source)
-    if audio_streams <= 0:
-        _run_ffmpeg(
-            [
-                ffmpeg,
-                "-y",
-                "-ss",
-                str(clip_start),
-                "-to",
-                str(clip_end),
-                "-i",
-                str(source),
-                "-map",
-                "0:v:0",
-                "-c:v",
-                "copy",
-                str(output),
-            ]
-        )
-        return
-
-    if audio_streams == 1:
-        _run_ffmpeg(
-            [
-                ffmpeg,
-                "-y",
-                "-ss",
-                str(clip_start),
-                "-to",
-                str(clip_end),
-                "-i",
-                str(source),
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a:0",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                str(output),
-            ]
-        )
-        return
-
-    inputs = "".join(f"[0:a:{index}]" for index in range(audio_streams))
-    _run_ffmpeg(
-        [
-            ffmpeg,
-            "-y",
-            "-ss",
-            str(clip_start),
-            "-to",
-            str(clip_end),
-            "-i",
-            str(source),
-            "-filter_complex",
-            f"{inputs}amix=inputs={audio_streams}:duration=longest:dropout_transition=0[aout]",
-            "-map",
-            "0:v:0",
-            "-map",
-            "[aout]",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            str(output),
-        ]
-    )
-
-
 def quantize_crop_trajectory(crops: Sequence[tuple[int, int, int, int]], timestamps: Sequence[float]) -> list[CropSegment]:
     if len(crops) == 0 or len(timestamps) == 0:
         return []
@@ -166,7 +65,7 @@ class VideoEncoder:
         final_output = output_dir / f"{job_id}_final.mp4"
 
         try:
-            _trim_with_audio(ffmpeg, source, trimmed, clip_start, clip_end)
+            _run_ffmpeg([ffmpeg, "-y", "-ss", str(clip_start), "-to", str(clip_end), "-i", str(source), "-c:v", "copy", "-c:a", "copy", str(trimmed)])
             segments = quantize_crop_trajectory(crops, crop_timestamps) or [CropSegment(0.0, clip_end - clip_start, 555)]
             segment_paths: list[Path] = []
             for idx, segment in enumerate(segments):
@@ -183,10 +82,6 @@ class VideoEncoder:
                         str(max(0.0, segment.end - clip_start)),
                         "-i",
                         str(trimmed),
-                        "-map",
-                        "0:v:0",
-                        "-map",
-                        "0:a:0?",
                         "-vf",
                         vf,
                         "-r",
