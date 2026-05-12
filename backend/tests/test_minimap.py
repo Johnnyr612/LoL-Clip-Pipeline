@@ -46,6 +46,15 @@ def test_white_box_detection(detector: MinimapDetector):
     assert abs(centroid[1] * 540 - 140) <= 3
 
 
+def test_white_box_outline_detection(detector: MinimapDetector):
+    minimap = np.zeros((270, 345, 3), dtype=np.uint8)
+    cv2.rectangle(minimap, (95, 128), (228, 253), (235, 235, 235), thickness=3)
+    centroid = detector.find_white_box(minimap)
+    assert centroid is not None
+    assert abs(centroid[0] * 345 - 161.5) <= 5
+    assert abs(centroid[1] * 270 - 190.5) <= 5
+
+
 def _circle(color_rgb: tuple[int, int, int]) -> np.ndarray:
     frame = np.zeros((48, 48, 3), dtype=np.uint8)
     cv2.circle(frame, (24, 24), 20, color_rgb, thickness=6)
@@ -128,7 +137,7 @@ def test_aggregation_uses_player_champion_when_white_box_missing(detector: Minim
 def test_player_hud_detection(detector: MinimapDetector):
     frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
     icon = np.array(Image.open(config.MINIMAP_ICONS_DIR / "images" / "Aatrox.png").convert("RGB"))
-    frame[972:1080, 604:710] = cv2.resize(icon, (106, 108), interpolation=cv2.INTER_AREA)
+    frame[5:86, 74:156] = cv2.resize(icon, (82, 81), interpolation=cv2.INTER_AREA)
     name, score = detector.detect_player_hud_champion(frame)
     assert name == "Aatrox"
     assert score > 0.45

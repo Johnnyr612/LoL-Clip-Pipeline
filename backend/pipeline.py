@@ -13,10 +13,11 @@ from . import config, models
 from .caption_gen import CaptionGenerator
 from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
-from .fight_detector import FightDetector, apply_dialog_extension, boundaries_from_scores, finish_on_kill_or_death
+from .fight_detector import FightDetector, apply_dialog_extension, boundaries_from_scores, estimate_visible_enemy_count, finish_on_kill_or_death
 from .frame_io import FrameDecodeError, decode_video
 from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
 from .models import update_job_progress
+from .vision_classifier import VisionFightResult, classify_fight_participants
 
 
 @dataclass(frozen=True)
@@ -190,6 +191,13 @@ class ClipPipeline:
                 sampled_player_positions,
                 player_champion if player_champion_score >= config.HUD_PLAYER_MATCH_CONFIRM else None,
             )
+            visible_enemy_count = estimate_visible_enemy_count(bundle.full_frames, bundle.timestamps_full, trim.fight_start, trim.fight_end)
+            if visible_enemy_count is not None:
+                participants = _cap_participants_to_visible_enemy_count(participants, visible_enemy_count)
+            vision_result = classify_fight_participants(bundle.full_frames, bundle.timestamps_full, trim.clip_start, trim.clip_end)
+            if vision_result is not None:
+                flags.append("vision_champion_classifier")
+                participants = _apply_vision_participants(participants, vision_result)
             flags.extend(participants.flags)
             await update_job_progress(
                 db_path,
@@ -376,6 +384,36 @@ def _detect_player_champion(
         return "unknown", -1.0
     name, values = max(scores.items(), key=lambda item: (len(item[1]), float(np.mean(item[1]))))
     return name, float(np.mean(values))
+
+
+def _cap_participants_to_visible_enemy_count(participants: FightParticipants, enemy_count: int) -> FightParticipants:
+    if enemy_count <= 0 or len(participants.enemies) <= enemy_count:
+        return participants
+    enemies = sorted(participants.enemies, key=lambda enemy: enemy.confidence, reverse=True)[:enemy_count]
+    fight_type = f"1v{max(1, min(5, len(enemies)))}"
+    return FightParticipants(participants.player, [], enemies, fight_type, [*participants.flags, "enemy_count_capped_by_healthbars"])
+
+
+def _apply_vision_participants(participants: FightParticipants, vision_result: VisionFightResult) -> FightParticipants:
+    player = ChampionResult(
+        vision_result.player_champion,
+        vision_result.confidence,
+        "ally",
+        participants.player.mean_pos,
+        True,
+    )
+    local_enemies = {enemy.champion_name: enemy for enemy in participants.enemies}
+    enemies = [
+        ChampionResult(
+            name,
+            max(vision_result.confidence, local_enemies.get(name, ChampionResult(name, 0.0, "enemy", (0.5, 0.5))).confidence),
+            "enemy",
+            local_enemies.get(name, ChampionResult(name, 0.0, "enemy", (0.5, 0.5))).mean_pos,
+        )
+        for name in vision_result.enemy_champions
+    ]
+    fight_type = vision_result.fight_type or f"1v{max(1, len(enemies))}"
+    return FightParticipants(player, [], enemies, fight_type, [*participants.flags, "champions_overridden_by_vision"])
 
 
 def _position_to_pixels(position: tuple[float, float] | None, frame_shape: tuple[int, ...]) -> tuple[float, float] | None:

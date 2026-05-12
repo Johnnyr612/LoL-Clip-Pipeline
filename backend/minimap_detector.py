@@ -57,6 +57,7 @@ class MinimapDetector:
         self.base_names: list[str] = []
         self.base_matrix = np.empty((0, 90 * 90), dtype=np.float32)
         self.augmented_matrices: dict[str, np.ndarray] = {}
+        self.phash_templates: dict[str, list[np.ndarray]] = {}
         self._minimap_rect: Optional[Rect] = None
         self.minimap_boundary_estimated = False
 
@@ -85,6 +86,7 @@ class MinimapDetector:
 
             self.templates[name] = self._center_crop_gray(rgb)
             self.augmented[name] = self._augment_template(rgb)
+            self.phash_templates[name] = [self._phash(rgb), self._phash(rgb[15:105, 15:105])]
         self._build_match_indexes()
 
     def _build_match_indexes(self) -> None:
@@ -120,6 +122,19 @@ class MinimapDetector:
         start = (rgb.shape[0] - crop) // 2
         center = rgb[start : start + crop, start : start + crop]
         return cv2.cvtColor(center, cv2.COLOR_RGB2GRAY)
+
+    @staticmethod
+    def _phash(rgb: np.ndarray) -> np.ndarray:
+        resized = cv2.resize(rgb, (96, 96), interpolation=cv2.INTER_AREA)
+        lab = cv2.cvtColor(resized, cv2.COLOR_RGB2LAB)
+        lightness, a, b = cv2.split(lab)
+        equalized = cv2.equalizeHist(lightness)
+        normalized = cv2.cvtColor(cv2.merge([equalized, a, b]), cv2.COLOR_LAB2RGB)
+        gray = cv2.cvtColor(cv2.resize(normalized, (32, 32), interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY).astype(np.float32)
+        dct = cv2.dct(gray)
+        low_freq = dct[:8, :8].reshape(-1)
+        median = float(np.median(low_freq[1:]))
+        return low_freq > median
 
     @staticmethod
     def _scale_pad(rgb: np.ndarray, scale: float) -> np.ndarray:
@@ -210,7 +225,35 @@ class MinimapDetector:
             aspect = bw / max(bh, 1)
             if len(approx) >= 4 and 0.5 <= aspect <= 2.0:
                 return ((x + bw / 2) / w, (y + bh / 2) / h)
+        outline = self._find_camera_box_outline(minimap_frame)
+        if outline is not None:
+            x, y, bw, bh = outline
+            return ((x + bw / 2) / w, (y + bh / 2) / h)
         return None
+
+    @staticmethod
+    def _find_camera_box_outline(minimap_frame: np.ndarray) -> Optional[Rect]:
+        h, w = minimap_frame.shape[:2]
+        hsv = cv2.cvtColor(minimap_frame, cv2.COLOR_RGB2HSV)
+        mask = cv2.inRange(hsv, (0, 0, 150), (180, 95, 255))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates: list[tuple[float, Rect]] = []
+        for contour in contours:
+            x, y, bw, bh = cv2.boundingRect(contour)
+            area = float(cv2.contourArea(contour))
+            aspect = bw / max(bh, 1)
+            if not 0.55 <= aspect <= 1.70:
+                continue
+            if not w * 0.12 <= bw <= w * 0.55:
+                continue
+            if not h * 0.08 <= bh <= h * 0.55:
+                continue
+            candidates.append((area, (x, y, bw, bh)))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[0])[1]
 
     @staticmethod
     def classify_team(roi_rgb: np.ndarray) -> Literal["ally", "enemy", "unknown"]:
@@ -259,17 +302,49 @@ class MinimapDetector:
                 best_score = score
         return best_name, best_score
 
+    def match_champion_rgb(self, roi_rgb: np.ndarray) -> tuple[str, float]:
+        gray = cv2.cvtColor(cv2.resize(roi_rgb, (90, 90), interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY)
+        gray_name, gray_score = self.match_champion(gray)
+        phash_name, phash_distance = self._match_phash(roi_rgb)
+        if (
+            phash_distance <= config.ICON_PHASH_CONFIRM_MAX_DISTANCE
+            and (gray_score >= config.ICON_PHASH_MIN_GRAY_SCORE or gray_name == phash_name)
+        ):
+            confidence = max(gray_score, 1.0 - phash_distance / 64.0)
+            return phash_name, float(confidence)
+        if phash_distance <= config.ICON_PHASH_SUPPORT_MAX_DISTANCE and gray_name == phash_name:
+            return gray_name, max(gray_score, float(1.0 - phash_distance / 64.0))
+        return gray_name, gray_score
+
+    def _match_phash(self, roi_rgb: np.ndarray) -> tuple[str, int]:
+        roi_hash = self._phash(roi_rgb)
+        best_name = "unknown"
+        best_distance = 65
+        for name, hashes in self.phash_templates.items():
+            distance = min(int(np.count_nonzero(roi_hash != template_hash)) for template_hash in hashes)
+            if distance < best_distance:
+                best_name = name
+                best_distance = distance
+        return best_name, best_distance
+
     def detect_player_hud_champion(self, frame: np.ndarray) -> tuple[str, float]:
         h, w = frame.shape[:2]
-        # Standard LoL HUD portrait, scaled from a 1920x1080 capture.
-        x1, y1 = int(w * 0.315), int(h * 0.900)
-        x2, y2 = int(w * 0.370), h
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
+        candidates = [
+            # Top-left player panel portrait.
+            (int(w * 0.039), int(h * 0.005), int(w * 0.081), int(h * 0.080)),
+            # Bottom HUD portrait fallback.
+            (int(w * 0.315), int(h * 0.900), int(w * 0.370), h),
+        ]
+        matches: list[tuple[str, float]] = []
+        for x1, y1, x2, y2 in candidates:
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+            square = _center_square(crop)
+            matches.append(self.match_champion_rgb(cv2.resize(square, (120, 120), interpolation=cv2.INTER_AREA)))
+        if not matches:
             return "unknown", -1.0
-        square = _center_square(crop)
-        gray = self._center_crop_gray(cv2.resize(square, (120, 120), interpolation=cv2.INTER_AREA))
-        return self.match_champion(gray)
+        return max(matches, key=lambda item: item[1])
 
     def detect_icons(self, minimap_frame: np.ndarray) -> list[RawIconDetection]:
         gray = cv2.cvtColor(minimap_frame, cv2.COLOR_RGB2GRAY)
@@ -301,8 +376,7 @@ class MinimapDetector:
             if min(interior.shape[:2]) > 30:
                 margin = max(1, int(radius * 0.35))
                 interior = interior[margin:-margin, margin:-margin]
-            roi_gray = cv2.cvtColor(cv2.resize(interior, (90, 90)), cv2.COLOR_RGB2GRAY)
-            best, score = self.match_champion(roi_gray)
+            best, score = self.match_champion_rgb(cv2.resize(interior, (120, 120), interpolation=cv2.INTER_AREA))
             if score >= config.TEMPLATE_MATCH_CONFIRM:
                 champion, uncertain = best, False
             elif score >= config.TEMPLATE_MATCH_UNCERTAIN:

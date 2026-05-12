@@ -3,7 +3,15 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from backend.fight_detector import DialogSegment, TrimResult, apply_dialog_extension, boundaries_from_scores, finish_on_kill_or_death, merge_highlights
+from backend.fight_detector import (
+    DialogSegment,
+    TrimResult,
+    apply_dialog_extension,
+    boundaries_from_scores,
+    estimate_visible_enemy_count,
+    finish_on_kill_or_death,
+    merge_highlights,
+)
 
 
 def test_highlight_merge():
@@ -64,3 +72,14 @@ def test_finish_on_kill_or_death_preserves_overlapping_dialog():
     result = finish_on_kill_or_death(trim, frames, timestamps, 10)
 
     assert result.clip_end == 7.5
+
+
+def test_estimate_visible_enemy_count():
+    frames = np.zeros((4, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(4, dtype=np.float32)
+    for idx in range(4):
+        cv2.rectangle(frames[idx], (820, 360), (935, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frames[idx], (760, 300), (860, 307), (210, 30, 30), thickness=-1)
+        cv2.rectangle(frames[idx], (900, 300), (1000, 307), (210, 30, 30), thickness=-1)
+
+    assert estimate_visible_enemy_count(frames, timestamps, 0, 3) == 2

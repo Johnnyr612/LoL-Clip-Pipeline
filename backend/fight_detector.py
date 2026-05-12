@@ -146,6 +146,31 @@ def finish_on_kill_or_death(
     )
 
 
+def estimate_visible_enemy_count(
+    full_frames: np.ndarray,
+    timestamps: np.ndarray,
+    fight_start: float,
+    fight_end: float,
+) -> int | None:
+    if len(full_frames) == 0 or len(timestamps) == 0:
+        return None
+    indexes = np.flatnonzero((timestamps >= fight_start) & (timestamps <= fight_end))
+    if len(indexes) == 0:
+        return None
+    if len(indexes) > 8:
+        indexes = indexes[np.linspace(0, len(indexes) - 1, 8, dtype=int)]
+    counts: list[int] = []
+    for index in indexes:
+        red_bars, green_bars = _combat_health_bars(full_frames[int(index)])
+        player_bar = _select_player_health_bar(green_bars)
+        count = len(_enemy_bars_near_player(red_bars, player_bar))
+        if count:
+            counts.append(count)
+    if not counts:
+        return None
+    return int(max(1, min(5, round(float(np.median(counts))))))
+
+
 def _preserve_overlapping_dialog(
     clip_start: float,
     clip_end: float,
