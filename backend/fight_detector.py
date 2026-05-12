@@ -166,6 +166,34 @@ def finish_on_kill_or_death(
     )
 
 
+def add_output_context(trim: TrimResult, source_duration: float) -> TrimResult:
+    clip_start = max(0.0, trim.clip_start - config.OUTPUT_CONTEXT_PADDING_SEC)
+    clip_end = min(source_duration, trim.clip_end + config.OUTPUT_CONTEXT_PADDING_SEC)
+    if clip_end - clip_start > config.MAX_CLIP_DURATION:
+        overflow = (clip_end - clip_start) - config.MAX_CLIP_DURATION
+        front_room = trim.clip_start - clip_start
+        back_room = clip_end - trim.clip_end
+        trim_front = min(front_room, overflow / 2)
+        trim_back = min(back_room, overflow - trim_front)
+        remaining = overflow - trim_front - trim_back
+        if remaining > 0:
+            if front_room - trim_front > back_room - trim_back:
+                trim_front += remaining
+            else:
+                trim_back += remaining
+        clip_start += trim_front
+        clip_end -= trim_back
+    return TrimResult(
+        clip_start=round(clip_start, 3),
+        clip_end=round(clip_end, 3),
+        fight_start=trim.fight_start,
+        fight_end=trim.fight_end,
+        fight_duration=trim.fight_duration,
+        dialog_segments=trim.dialog_segments,
+        flags=[*trim.flags, "output_context_padding_applied"],
+    )
+
+
 def estimate_visible_enemy_count(
     full_frames: np.ndarray,
     timestamps: np.ndarray,

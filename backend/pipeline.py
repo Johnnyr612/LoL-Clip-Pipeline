@@ -13,7 +13,7 @@ from . import config, models
 from .caption_gen import CaptionGenerator
 from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
-from .fight_detector import FightDetector, apply_dialog_extension, boundaries_from_scores, estimate_visible_enemy_count, finish_on_kill_or_death
+from .fight_detector import FightDetector, add_output_context, apply_dialog_extension, boundaries_from_scores, estimate_visible_enemy_count, finish_on_kill_or_death
 from .frame_io import FrameDecodeError, decode_video
 from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
 from .models import update_job_progress
@@ -174,6 +174,7 @@ class ClipPipeline:
                 bundle.timestamps_full,
                 validation.duration,
             )
+            trim = add_output_context(trim, validation.duration)
             player_champion, player_champion_score = _detect_player_champion(
                 self.minimap_detector,
                 bundle.full_frames,

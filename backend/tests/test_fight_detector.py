@@ -6,6 +6,7 @@ import numpy as np
 from backend.fight_detector import (
     DialogSegment,
     TrimResult,
+    add_output_context,
     apply_dialog_extension,
     boundaries_from_scores,
     estimate_visible_enemy_count,
@@ -87,6 +88,17 @@ def test_finish_on_kill_or_death_preserves_overlapping_dialog():
     result = finish_on_kill_or_death(trim, frames, timestamps, 40)
 
     assert result.clip_end == 37.0
+
+
+def test_add_output_context_adds_two_seconds_without_moving_fight_markers():
+    trim = TrimResult(clip_start=10, clip_end=38, fight_start=12, fight_end=36, fight_duration=24, dialog_segments=[], flags=[])
+    result = add_output_context(trim, 60)
+
+    assert result.clip_start == 8.0
+    assert result.clip_end == 40.0
+    assert result.fight_start == 12
+    assert result.fight_end == 36
+    assert "output_context_padding_applied" in result.flags
 
 
 def test_estimate_visible_enemy_count():
