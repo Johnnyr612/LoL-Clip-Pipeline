@@ -59,9 +59,11 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
         clips_dir: Path,
         labels: list[dict],
         smoke_test: bool = False,
+        is_training: bool = True,
     ) -> None:
         self.clips_dir = clips_dir
         self.labels = labels[:5] if smoke_test else labels
+        self.is_training = is_training
         self.sample_index: list[tuple[Path, int, int]] = []
         self._prepare_samples()
 
@@ -71,6 +73,19 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
 
         for label in self.labels:
             filename = str(label.get("filename", ""))
+            is_synthetic_negative = bool(
+                label.get("_is_synthetic_negative", False)
+            )
+            if is_synthetic_negative:
+                npy_path = PRECOMPUTED_DIR / (Path(filename).stem + ".npy")
+                if not npy_path.exists():
+                    continue
+                frames = np.load(str(npy_path), mmap_mode="r")
+                n_frames = len(frames)
+                for start_second in range(0, max(0, n_frames - 15)):
+                    non_fight_samples.append((Path(filename), start_second, 0))
+                continue
+
             clip_path = self.clips_dir / filename
             if clip_path.suffix.lower() != ".mp4" or not clip_path.exists():
                 continue
@@ -113,6 +128,35 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
     def __len__(self) -> int:
         return len(self.sample_index)
 
+    def _augment_frame(
+        self,
+        frame: np.ndarray,
+        is_training: bool,
+    ) -> np.ndarray:
+        """Apply random augmentation to a single 224x224 RGB frame."""
+        if not is_training:
+            return frame
+
+        if random.random() < 0.5:
+            frame = np.fliplr(frame).copy()
+
+        brightness = random.uniform(0.8, 1.2)
+        frame = np.clip(
+            frame.astype(np.float32) * brightness,
+            0,
+            255,
+        ).astype(np.uint8)
+
+        contrast = random.uniform(0.8, 1.2)
+        mean_val = frame.mean()
+        frame = np.clip(
+            mean_val + (frame.astype(np.float32) - mean_val) * contrast,
+            0,
+            255,
+        ).astype(np.uint8)
+
+        return frame
+
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         clip_path, start_second, label = self.sample_index[index]
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -125,6 +169,7 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
             for second_offset in range(16):
                 frame_index = min(start_second + second_offset, len(frames) - 1)
                 frame = frames[frame_index].copy()
+                frame = self._augment_frame(frame, self.is_training)
                 normalized = (frame.astype(np.float32) / 255.0 - mean) / std
                 chw = np.transpose(normalized, (2, 0, 1))
                 tensors.append(torch.from_numpy(chw).float())
@@ -142,6 +187,7 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
                     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 else:
                     frame_rgb = np.zeros((224, 224, 3), dtype=np.uint8)
+                frame_rgb = self._augment_frame(frame_rgb, self.is_training)
                 resized = cv2.resize(
                     frame_rgb,
                     (224, 224),
@@ -156,10 +202,28 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
 
 
 class VideoMAEClassifier(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, freeze_layers: int = 8) -> None:
         super().__init__()
-        self.videomae = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
-        self.classifier = nn.Linear(768, 2)
+        self.videomae = VideoMAEModel.from_pretrained(
+            "MCG-NJU/videomae-base"
+        )
+
+        encoder_blocks = self.videomae.encoder.layer
+        for index, block in enumerate(encoder_blocks):
+            if index < freeze_layers:
+                for param in block.parameters():
+                    param.requires_grad = False
+
+        for param in self.videomae.embeddings.parameters():
+            param.requires_grad = False
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=0.3),
+            nn.Linear(768, 256),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(256, 2),
+        )
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         outputs = self.videomae(pixel_values=pixel_values)
@@ -253,9 +317,19 @@ def main() -> int:
     print("Building dataset index...", flush=True)
 
     train_labels, val_labels = _split_labels(all_labels)
-    train_dataset = LoLFightDataset(args.clips_dir, train_labels, args.smoke_test)
+    train_dataset = LoLFightDataset(
+        args.clips_dir,
+        train_labels,
+        args.smoke_test,
+        is_training=True,
+    )
     print(f"Train samples: {len(train_dataset)}", flush=True)
-    val_dataset = LoLFightDataset(args.clips_dir, val_labels, args.smoke_test)
+    val_dataset = LoLFightDataset(
+        args.clips_dir,
+        val_labels,
+        args.smoke_test,
+        is_training=False,
+    )
     print(f"Val samples: {len(val_dataset)}", flush=True)
     print("Starting training loop...", flush=True)
     if len(train_dataset) == 0 or len(val_dataset) == 0:
@@ -272,7 +346,19 @@ def main() -> int:
         model.load_state_dict(torch.load(str(checkpoint_path), map_location=device))
         print("Resuming from existing checkpoint", flush=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
+    trainable_params = [
+        param for param in model.parameters() if param.requires_grad
+    ]
+    print(
+        f"Trainable parameters: "
+        f"{sum(param.numel() for param in trainable_params):,}",
+        flush=True,
+    )
+    optimizer = torch.optim.AdamW(
+        trainable_params,
+        lr=5e-6,
+        weight_decay=0.1,
+    )
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=100,
@@ -284,7 +370,7 @@ def main() -> int:
     )
 
     best_val_loss = float("inf")
-    patience_left = 4
+    patience_left = 6
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -407,7 +493,7 @@ def main() -> int:
 
         if avg_val_loss < best_val_loss and not args.smoke_test:
             best_val_loss = avg_val_loss
-            patience_left = 4
+            patience_left = 6
             torch.save(model.state_dict(), str(output_dir / "videomae_lol_best.pt"))
             print(f"Checkpoint saved at epoch {epoch}", flush=True)
         else:
