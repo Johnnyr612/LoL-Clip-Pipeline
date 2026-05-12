@@ -30,6 +30,10 @@ training_clips/
 # Training logs
 training_logs/
 
+# Minimap GAN datasets and generated caches
+data/minimap_gan/
+checkpoints/minimap_mask_gan.pt
+
 # Jupyter notebooks (local only)
 *.ipynb
 

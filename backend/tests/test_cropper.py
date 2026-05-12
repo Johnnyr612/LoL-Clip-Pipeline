@@ -7,11 +7,13 @@ from backend.cropper import blend_target, clamp_crop_x, compute_threat_sx, enfor
 
 
 def test_blend_1v1():
-    assert blend_target("1v1", 400, 700, 600) == 0.30 * 400 + 0.45 * 700 + 0.25 * 600
+    player, threat, flow = config.BLEND_1V1
+    assert blend_target("1v1", 400, 700, 600) == player * 400 + threat * 700 + flow * 600
 
 
 def test_blend_1vn():
-    assert blend_target("1v3", 400, 700, 600) == 0.25 * 400 + 0.40 * 700 + 0.35 * 600
+    player, threat, flow = config.BLEND_1VN
+    assert blend_target("1v3", 400, 700, 600) == player * 400 + threat * 700 + flow * 600
 
 
 def test_safe_zone_left():

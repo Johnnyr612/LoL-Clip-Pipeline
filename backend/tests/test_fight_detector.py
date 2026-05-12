@@ -3,6 +3,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from backend import config
 from backend.fight_detector import (
     DialogSegment,
     TrimResult,
@@ -41,7 +42,7 @@ def test_dialog_extension_post():
 
 def test_max_duration_clamp():
     result = apply_dialog_extension(5, 20, 60, [DialogSegment("long", 20.5, 50.5)])
-    assert result.clip_end - result.clip_start == 40.0
+    assert result.clip_end - result.clip_start == config.MAX_CLIP_DURATION
 
 
 def test_finish_on_kill_or_death_ends_after_enemy_healthbar_disappears():
