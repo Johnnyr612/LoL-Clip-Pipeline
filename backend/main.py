@@ -81,7 +81,9 @@ async def create_job(file: UploadFile = File(...)) -> dict:
 
     async def run_background() -> None:
         async with job_semaphore:
-            await pipeline.run(source_path)
+            await asyncio.to_thread(
+                lambda: asyncio.run(pipeline.run(source_path))
+            )
 
     asyncio.create_task(run_background())
     return {"accepted": True, "source_path": str(source_path)}
@@ -123,7 +125,9 @@ async def process_existing(payload: dict) -> dict:
     # Run pipeline in background - do not await
     async def run_background() -> None:
         async with job_semaphore:
-            await pipeline.run(source_path, job_id)
+            await asyncio.to_thread(
+                lambda: asyncio.run(pipeline.run(source_path, job_id))
+            )
 
     asyncio.create_task(run_background())
 
