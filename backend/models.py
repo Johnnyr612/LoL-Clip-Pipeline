@@ -80,10 +80,14 @@ async def update_job(db_path: Path, job_id: str, **fields: Any) -> None:
     await init_db(db_path)
     if not fields:
         return
-    normalized = {
-        key: json.dumps(value) if key in {"flags", "captions"} and not isinstance(value, str) else value
-        for key, value in fields.items()
-    }
+    normalized = {}
+    for key, value in fields.items():
+        if key in {"flags", "captions"} and not isinstance(value, str):
+            normalized[key] = json.dumps(value)
+        elif isinstance(value, Path):
+            normalized[key] = str(value)
+        else:
+            normalized[key] = value
     normalized["updated_at"] = "CURRENT_TIMESTAMP"
     assignments = []
     values: list[Any] = []
