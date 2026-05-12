@@ -111,6 +111,20 @@ def test_aggregation_filters_champions_far_from_fight(detector: MinimapDetector)
     assert [enemy.champion_name for enemy in result.enemies] == ["Ahri"]
 
 
+def test_aggregation_uses_player_champion_when_white_box_missing(detector: MinimapDetector):
+    detections = [
+        [
+            RawIconDetection((50, 50), 12, "ally", "Swain", 0.9, False),
+            RawIconDetection((92, 80), 12, "enemy", "Jax", 0.9, False),
+            RawIconDetection((300, 250), 12, "enemy", "Taric", 0.9, False),
+        ]
+    ]
+    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, [None], "Swain")
+    assert result.player.champion_name == "Swain"
+    assert [enemy.champion_name for enemy in result.enemies] == ["Jax"]
+    assert result.fight_type == "1v1"
+
+
 def test_player_hud_detection(detector: MinimapDetector):
     frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
     icon = np.array(Image.open(config.MINIMAP_ICONS_DIR / "images" / "Aatrox.png").convert("RGB"))

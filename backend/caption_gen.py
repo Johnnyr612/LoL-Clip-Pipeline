@@ -37,7 +37,10 @@ def _fallback_caption(
     clean_enemies = _clean_champion_names(enemy_names)
     minimap_context = [name for name in _clean_champion_names(minimap_champions or []) if name != player_champion]
     enemy_text = ", ".join(clean_enemies or minimap_context[:4]) or "the enemy"
-    hook = f"{player_champion} turned this {fight_type} into a highlight"
+    if len(clean_enemies or minimap_context) == 1:
+        hook = f"{player_champion} took the {(clean_enemies or minimap_context)[0]} duel"
+    else:
+        hook = f"{player_champion} turned this {fight_type} into a highlight"
     body_limit = 300 if platform == "tiktok" else 500
     caption = (
         f"{hook}\n"

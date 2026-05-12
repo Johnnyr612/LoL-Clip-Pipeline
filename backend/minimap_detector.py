@@ -327,6 +327,8 @@ class MinimapDetector:
             if not fight_start <= float(timestamp) <= fight_end:
                 continue
             frame_player_pos = player_positions[frame_index] if frame_index < len(player_positions) else None
+            if frame_player_pos is None:
+                frame_player_pos = _player_detection_position(frame_detections, player_champion)
             frame_detections = _fight_relevant_detections(frame_detections, frame_player_pos)
             used_tracks: set[int] = set()
             for detection in frame_detections:
@@ -406,6 +408,29 @@ def _known_player_champion(player_champion: str | None, fallback: str) -> str:
     if player_champion and not player_champion.startswith("unknown"):
         return player_champion
     return fallback
+
+
+def _player_detection_position(
+    detections: list[RawIconDetection],
+    player_champion: str | None,
+) -> tuple[float, float] | None:
+    if not player_champion or player_champion.startswith("unknown"):
+        return None
+    candidates = [
+        detection
+        for detection in detections
+        if detection.team == "ally" and detection.champion_name == player_champion and not detection.is_uncertain
+    ]
+    if not candidates:
+        candidates = [
+            detection
+            for detection in detections
+            if detection.champion_name == player_champion and not detection.is_uncertain
+        ]
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda detection: detection.match_score)
+    return (float(best.circle_center[0]), float(best.circle_center[1]))
 
 
 def _fight_relevant_detections(

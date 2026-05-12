@@ -23,12 +23,12 @@ def test_fallback_caption_uses_minimap_context_when_enemies_unknown(monkeypatch)
     monkeypatch.setattr(generator, "model_path", type("MissingPath", (), {"exists": lambda self: False})())
 
     result = generator.generate(
-        "Aatrox",
-        ["unknown_champion_1"],
+        "Swain",
+        ["Jax"],
         "1v1",
         8.0,
         "",
-        ["Aatrox", "Ahri", "Thresh"],
+        ["Swain", "Jax"],
     )
 
-    assert "Ahri, Thresh" in result.captions["tiktok"]["caption"]
+    assert "Swain took the Jax duel" in result.captions["tiktok"]["caption"]

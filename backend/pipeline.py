@@ -13,7 +13,7 @@ from . import config, models
 from .caption_gen import CaptionGenerator
 from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
-from .fight_detector import FightDetector, apply_dialog_extension, boundaries_from_scores
+from .fight_detector import FightDetector, apply_dialog_extension, boundaries_from_scores, finish_on_kill_or_death
 from .frame_io import FrameDecodeError, decode_video
 from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
 from .models import update_job_progress
@@ -167,7 +167,12 @@ class ClipPipeline:
             )
             dialog = self.fight_detector.transcribe(bundle.audio_path)
             trim_result = apply_dialog_extension(fight_start, fight_end, validation.duration, dialog)
-            trim = replace(trim_result, flags=fight_flags + trim_result.flags)
+            trim = finish_on_kill_or_death(
+                replace(trim_result, flags=fight_flags + trim_result.flags),
+                bundle.full_frames,
+                bundle.timestamps_full,
+                validation.duration,
+            )
             player_champion, player_champion_score = _detect_player_champion(
                 self.minimap_detector,
                 bundle.full_frames,

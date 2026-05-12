@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+import cv2
 import numpy as np
 
 from . import config
@@ -117,6 +118,154 @@ def apply_dialog_extension(
         dialog_segments=list(dialog_segments),
         flags=flags,
     )
+
+
+def finish_on_kill_or_death(
+    trim: TrimResult,
+    full_frames: np.ndarray,
+    timestamps: np.ndarray,
+    source_duration: float,
+) -> TrimResult:
+    event_time, event_flag = _detect_combat_event_time(full_frames, timestamps, trim.fight_start, trim.fight_end)
+    if event_time is None:
+        return trim
+
+    clip_end = min(source_duration, event_time + config.COMBAT_EVENT_END_PADDING_SEC)
+    clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
+    clip_end = max(clip_end, trim.clip_start + 1.0)
+    fight_end = min(trim.fight_end, event_time)
+    flags = [*trim.flags, event_flag, "clip_end_on_kill_or_death"]
+    return TrimResult(
+        clip_start=trim.clip_start,
+        clip_end=round(clip_end, 3),
+        fight_start=trim.fight_start,
+        fight_end=round(fight_end, 3),
+        fight_duration=round(max(0.0, fight_end - trim.fight_start), 3),
+        dialog_segments=trim.dialog_segments,
+        flags=flags,
+    )
+
+
+def _preserve_overlapping_dialog(
+    clip_start: float,
+    clip_end: float,
+    dialog_segments: Sequence[DialogSegment],
+    source_duration: float,
+) -> float:
+    adjusted_end = clip_end
+    for segment in dialog_segments:
+        if segment.start < adjusted_end < segment.end:
+            adjusted_end = segment.end + config.DIALOG_PADDING
+        elif clip_start <= segment.start <= adjusted_end and segment.end > adjusted_end:
+            adjusted_end = segment.end + config.DIALOG_PADDING
+    return min(source_duration, adjusted_end)
+
+
+def _detect_combat_event_time(
+    full_frames: np.ndarray,
+    timestamps: np.ndarray,
+    fight_start: float,
+    fight_end: float,
+) -> tuple[float | None, str]:
+    if len(full_frames) == 0 or len(timestamps) == 0:
+        return None, ""
+    search_end = min(float(timestamps[-1]), fight_end + config.COMBAT_EVENT_SEARCH_AFTER_FIGHT_SEC)
+    indexes = np.flatnonzero((timestamps >= fight_start) & (timestamps <= search_end))
+    if len(indexes) < 3:
+        return None, ""
+
+    enemy_counts: list[int] = []
+    player_present: list[bool] = []
+    times: list[float] = []
+    for index in indexes:
+        frame = full_frames[int(index)]
+        red_bars, green_bars = _combat_health_bars(frame)
+        player_bar = _select_player_health_bar(green_bars)
+        visible_enemies = _enemy_bars_near_player(red_bars, player_bar)
+        enemy_counts.append(len(visible_enemies))
+        player_present.append(player_bar is not None)
+        times.append(float(timestamps[int(index)]))
+
+    engaged = False
+    missing_enemy_run = 0
+    missing_player_run = 0
+    for idx, enemy_count in enumerate(enemy_counts):
+        if enemy_count > 0:
+            engaged = True
+            missing_enemy_run = 0
+        elif engaged:
+            missing_enemy_run += 1
+
+        if engaged and not player_present[idx]:
+            missing_player_run += 1
+        else:
+            missing_player_run = 0
+
+        if engaged and missing_player_run >= 2:
+            return times[max(0, idx - missing_player_run + 1)], "death_event_detected"
+        if engaged and missing_enemy_run >= 2:
+            return times[max(0, idx - missing_enemy_run + 1)], "kill_event_detected"
+    return None, ""
+
+
+def _combat_health_bars(frame: np.ndarray) -> tuple[list[tuple[int, int, int, int]], list[tuple[int, int, int, int]]]:
+    h, w = frame.shape[:2]
+    roi_y1, roi_y2 = int(h * 0.08), int(h * 0.82)
+    roi_x1, roi_x2 = int(w * 0.02), int(w * 0.96)
+    roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+    red_mask = _mask_color(roi, "red")
+    green_mask = _mask_color(roi, "green")
+    return (
+        _health_bar_boxes(red_mask, roi_x1, roi_y1),
+        _health_bar_boxes(green_mask, roi_x1, roi_y1),
+    )
+
+
+def _mask_color(roi: np.ndarray, color: str) -> np.ndarray:
+    hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+    if color == "red":
+        mask1 = cv2.inRange(hsv, (0, 80, 90), (12, 255, 255))
+        mask2 = cv2.inRange(hsv, (168, 80, 90), (180, 255, 255))
+        return cv2.bitwise_or(mask1, mask2)
+    return cv2.inRange(hsv, (35, 70, 80), (90, 255, 255))
+
+
+def _health_bar_boxes(mask: np.ndarray, offset_x: int, offset_y: int) -> list[tuple[int, int, int, int]]:
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 2))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes: list[tuple[int, int, int, int]] = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if not config.COMBAT_HEALTHBAR_MIN_WIDTH <= w <= config.COMBAT_HEALTHBAR_MAX_WIDTH:
+            continue
+        if not 3 <= h <= 18:
+            continue
+        boxes.append((x + offset_x, y + offset_y, w, h))
+    return boxes
+
+
+def _select_player_health_bar(green_bars: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int] | None:
+    if not green_bars:
+        return None
+    return max(green_bars, key=lambda box: (box[2], -box[1]))
+
+
+def _enemy_bars_near_player(
+    red_bars: list[tuple[int, int, int, int]],
+    player_bar: tuple[int, int, int, int] | None,
+) -> list[tuple[int, int, int, int]]:
+    if player_bar is None:
+        return red_bars
+    px = player_bar[0] + player_bar[2] / 2
+    py = player_bar[1] + player_bar[3] / 2
+    nearby = []
+    for bar in red_bars:
+        bx = bar[0] + bar[2] / 2
+        by = bar[1] + bar[3] / 2
+        if abs(bx - px) <= 420 and abs(by - py) <= 260:
+            nearby.append(bar)
+    return nearby
 
 
 class FightDetector:
