@@ -199,7 +199,7 @@ class ClipPipeline:
             vision_result = classify_fight_participants(bundle.full_frames, bundle.timestamps_full, trim.clip_start, trim.clip_end)
             if vision_result is not None:
                 flags.append("vision_champion_classifier")
-                participants = _apply_vision_participants(participants, vision_result, trusted_player_champion)
+                participants = _apply_vision_participants(participants, vision_result, trusted_player_champion, player_champion_score)
             flags.extend(participants.flags)
             await update_job_progress(
                 db_path,
@@ -400,13 +400,18 @@ def _apply_vision_participants(
     participants: FightParticipants,
     vision_result: VisionFightResult,
     trusted_player_champion: str | None = None,
+    trusted_player_score: float = -1.0,
 ) -> FightParticipants:
     player_name = vision_result.player_champion
     flags = [*participants.flags, "champions_overridden_by_vision"]
     if trusted_player_champion and not trusted_player_champion.startswith("unknown"):
-        player_name = trusted_player_champion
-        if vision_result.player_champion != trusted_player_champion:
+        if vision_result.player_champion == trusted_player_champion:
+            player_name = trusted_player_champion
+        elif trusted_player_score >= config.HUD_PLAYER_OVERRIDE_VISION_CONFIRM:
+            player_name = trusted_player_champion
             flags.append("vision_player_override_ignored")
+        else:
+            flags.append("hud_player_disagreed_with_vision")
 
     player = ChampionResult(
         player_name,

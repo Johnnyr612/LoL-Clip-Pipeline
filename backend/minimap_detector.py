@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 
 from . import config
+from .minimap_classifier import MinimapIconClassifier
 
 Rect = tuple[int, int, int, int]
 
@@ -58,6 +59,7 @@ class MinimapDetector:
         self.base_matrix = np.empty((0, 90 * 90), dtype=np.float32)
         self.augmented_matrices: dict[str, np.ndarray] = {}
         self.phash_templates: dict[str, list[np.ndarray]] = {}
+        self.icon_classifier: MinimapIconClassifier | None = None
         self._minimap_rect: Optional[Rect] = None
         self.minimap_boundary_estimated = False
 
@@ -88,6 +90,12 @@ class MinimapDetector:
             self.augmented[name] = self._augment_template(rgb)
             self.phash_templates[name] = [self._phash(rgb), self._phash(rgb[15:105, 15:105])]
         self._build_match_indexes()
+        if config.MINIMAP_CLASSIFIER_ENABLED:
+            try:
+                self.icon_classifier = MinimapIconClassifier.load_or_build(images_dir, config.MINIMAP_CLASSIFIER_CACHE_PATH)
+            except Exception as exc:  # noqa: BLE001 - detector can still fall back to templates.
+                logger.warning("Minimap icon classifier unavailable: %s", exc)
+                self.icon_classifier = None
 
     def _build_match_indexes(self) -> None:
         self.base_names = list(self.templates)
@@ -306,6 +314,16 @@ class MinimapDetector:
         gray = cv2.cvtColor(cv2.resize(roi_rgb, (90, 90), interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY)
         gray_name, gray_score = self.match_champion(gray)
         phash_name, phash_distance = self._match_phash(roi_rgb)
+        classifier_name = "unknown"
+        classifier_score = -1.0
+        classifier_margin = 0.0
+        if self.icon_classifier is not None:
+            classifier_match = self.icon_classifier.match(roi_rgb)
+            classifier_name = classifier_match.champion_name
+            classifier_score = classifier_match.confidence
+            classifier_margin = classifier_match.margin
+            if classifier_score >= config.MINIMAP_CLASSIFIER_CONFIRM and classifier_margin >= config.MINIMAP_CLASSIFIER_MARGIN:
+                return classifier_name, classifier_score
         if (
             phash_distance <= config.ICON_PHASH_CONFIRM_MAX_DISTANCE
             and (gray_score >= config.ICON_PHASH_MIN_GRAY_SCORE or gray_name == phash_name)
@@ -314,6 +332,8 @@ class MinimapDetector:
             return phash_name, float(confidence)
         if phash_distance <= config.ICON_PHASH_SUPPORT_MAX_DISTANCE and gray_name == phash_name:
             return gray_name, max(gray_score, float(1.0 - phash_distance / 64.0))
+        if classifier_score >= config.MINIMAP_CLASSIFIER_SUPPORT and classifier_margin >= config.MINIMAP_CLASSIFIER_MARGIN:
+            return classifier_name, classifier_score
         return gray_name, gray_score
 
     def _match_phash(self, roi_rgb: np.ndarray) -> tuple[str, int]:
