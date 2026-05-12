@@ -29,7 +29,7 @@ def _run_ffmpeg(args: list[str]) -> None:
 
 
 def quantize_crop_trajectory(crops: Sequence[tuple[int, int, int, int]], timestamps: Sequence[float]) -> list[CropSegment]:
-    if not crops or not timestamps:
+    if len(crops) == 0 or len(timestamps) == 0:
         return []
     segments: list[CropSegment] = []
     start = float(timestamps[0])
