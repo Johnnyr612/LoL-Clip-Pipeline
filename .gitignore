@@ -10,5 +10,34 @@ frontend/dist/
 
 *.sqlite3
 *.log
+
+# Model checkpoints - too large for GitHub (344MB+)
+checkpoints/videomae_lol_best.pt
 checkpoints/*.pt
+checkpoints/*.pth
+
+# Llama model files
 models/*.gguf
+models/*.bin
+
+# Precomputed training frames (large numpy arrays)
+precomputed/
+precomputed_v2/
+
+# Training clips
+training_clips/
+
+# Training logs
+training_logs/
+
+# Jupyter notebooks (local only)
+*.ipynb
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
