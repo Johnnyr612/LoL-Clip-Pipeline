@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 
 from . import config, models
 from .logging_config import setup_logging
-from .pipeline import ClipPipeline, InputValidationError
+from .pipeline import ClipPipeline
 from .trainer import TrainingCoordinator
 from .uploader import UploadResult, publish_instagram_job, publish_tiktok_job
 
@@ -97,13 +98,36 @@ async def get_job(job_id: str) -> dict:
 @app.post("/process")
 async def process_existing(payload: dict) -> dict:
     if pipeline is None:
-        raise HTTPException(status_code=503, detail="Pipeline not ready")
+        raise HTTPException(
+            status_code=503, detail="Pipeline not ready"
+        )
     source_path = Path(payload.get("source_path", ""))
+
+    # Validate input before starting background task
     try:
-        async with job_semaphore:
-            job_id = await pipeline.run(source_path, payload.get("job_id"))
+        from .pipeline import validate_input, InputValidationError
+        validate_input(source_path)
     except InputValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422, detail=str(exc)
+        ) from exc
+
+    # Create job record immediately
+    job_id = str(uuid.uuid4())
+    await models.create_job(config.DB_PATH, job_id, str(source_path))
+
+    # Run pipeline in background - do not await
+    async def run_background() -> None:
+        async with job_semaphore:
+            await pipeline.run(source_path, job_id)
+
+    asyncio.create_task(run_background())
+
+    # Return job_id immediately - frontend polls for progress
     return {"job_id": job_id}
 
 

@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -13,9 +13,10 @@ from . import config, models
 from .caption_gen import CaptionGenerator
 from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
-from .fight_detector import FightDetector
+from .fight_detector import FightDetector, apply_dialog_extension, boundaries_from_scores
 from .frame_io import FrameDecodeError, decode_video
 from .minimap_detector import ChampionResult, MinimapDetector
+from .models import update_job_progress
 
 
 @dataclass(frozen=True)
@@ -71,17 +72,49 @@ class ClipPipeline:
 
     async def run(self, source_path: Path, job_id: str | None = None) -> str:
         job_id = job_id or uuid.uuid4().hex
+        db_path = self.db_path
         flags: list[str] = []
-        await models.create_job(self.db_path, job_id, source_path)
+        current_stage = "queued"
+        await models.create_job(db_path, job_id, source_path)
         try:
             validation = validate_input(source_path)
             if not validation.has_audio:
                 flags.append("no_audio")
 
-            await models.update_job(self.db_path, job_id, status="running", stage="stage1_decode", flags=flags)
+            current_stage = "stage1_decode"
+            await models.update_job(db_path, job_id, status="running", stage=current_stage, flags=flags)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage1_decode",
+                10,
+                "Validating input file...",
+            )
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage1_decode",
+                50,
+                "Extracting frames from 4K source...",
+            )
             bundle = decode_video(source_path, job_id)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage1_decode",
+                100,
+                "Frames extracted successfully",
+            )
 
-            await models.update_job(self.db_path, job_id, stage="stage2_minimap")
+            current_stage = "stage2_minimap"
+            await models.update_job(db_path, job_id, stage=current_stage)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage2_minimap",
+                10,
+                "Detecting champion icons on minimap...",
+            )
             detections = [self.minimap_detector.detect_icons(frame) for frame in bundle.minimap_frames]
             player_positions = [self.minimap_detector.find_white_box(frame) for frame in bundle.minimap_frames]
             participants = self.minimap_detector.aggregate_detections(
@@ -94,12 +127,53 @@ class ClipPipeline:
             flags.extend(participants.flags)
             if self.minimap_detector.minimap_boundary_estimated:
                 flags.append("minimap_boundary_estimated")
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage2_minimap",
+                100,
+                f"Detected: {participants.fight_type}",
+            )
 
-            await models.update_job(self.db_path, job_id, stage="stage3_fight", flags=flags)
-            trim = self.fight_detector.detect(bundle.full_frames, bundle.timestamps_full, validation.duration, bundle.audio_path)
+            current_stage = "stage3_fight"
+            await models.update_job(db_path, job_id, stage=current_stage, flags=flags)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage3_fight",
+                10,
+                "Loading VideoMAE fight detector...",
+            )
+            scores = self.fight_detector.score_windows(bundle.full_frames, bundle.timestamps_full)
+            fight_start, fight_end, fight_flags = boundaries_from_scores(scores, validation.duration)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage3_fight",
+                50,
+                f"Fight detected: {fight_start:.1f}s to {fight_end:.1f}s",
+            )
+            dialog = self.fight_detector.transcribe(bundle.audio_path)
+            trim_result = apply_dialog_extension(fight_start, fight_end, validation.duration, dialog)
+            trim = replace(trim_result, flags=fight_flags + trim_result.flags)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage3_fight",
+                100,
+                "Fight boundaries confirmed with dialog detection",
+            )
             flags.extend(trim.flags)
 
-            await models.update_job(self.db_path, job_id, stage="stage4_crop", flags=flags)
+            current_stage = "stage4_crop"
+            await models.update_job(db_path, job_id, stage=current_stage, flags=flags)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage4_crop",
+                10,
+                "Computing adaptive crop trajectory...",
+            )
             player_map_positions = _upsample_positions(player_positions, bundle.timestamps_mini, bundle.timestamps_full)
             enemies = _normalize_enemy_positions(participants.enemies)
             keyframes = self.cropper.compute_keyframes(
@@ -114,12 +188,56 @@ class ClipPipeline:
             clip_mask = (bundle.timestamps_full >= trim.clip_start) & (bundle.timestamps_full <= trim.clip_end)
             clip_timestamps = bundle.timestamps_full[clip_mask]
             crops = self.cropper.interpolate_to_frames(keyframes, clip_timestamps)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage4_crop",
+                100,
+                "Crop trajectory ready",
+            )
 
-            await models.update_job(self.db_path, job_id, stage="stage5_encode", flags=flags)
+            current_stage = "stage5_encode"
+            await models.update_job(db_path, job_id, stage=current_stage, flags=flags)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage5_encode",
+                10,
+                "Trimming source clip...",
+            )
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage5_encode",
+                50,
+                "Encoding 1080x1440 vertical video...",
+            )
             output_path = self.encoder.encode(job_id, source_path, trim.clip_start, trim.clip_end, crops, clip_timestamps)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage5_encode",
+                100,
+                "Video encoded successfully",
+            )
 
-            await models.update_job(self.db_path, job_id, stage="stage6_caption", output_path=output_path, flags=flags)
+            current_stage = "stage6_caption"
+            await models.update_job(db_path, job_id, stage=current_stage, output_path=output_path, flags=flags)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage6_caption",
+                10,
+                "Generating TikTok caption...",
+            )
             dialog_text = " ".join(segment.text for segment in trim.dialog_segments)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage6_caption",
+                50,
+                "Generating Instagram caption...",
+            )
             captions = self.captioner.generate(
                 participants.player.champion_name,
                 [enemy.champion_name for enemy in participants.enemies],
@@ -128,8 +246,15 @@ class ClipPipeline:
                 dialog_text,
             )
             flags.extend(captions.flags)
+            await update_job_progress(
+                db_path,
+                job_id,
+                "stage6_caption",
+                100,
+                "Captions generated successfully",
+            )
             await models.update_job(
-                self.db_path,
+                db_path,
                 job_id,
                 status="complete",
                 stage="complete",
@@ -141,11 +266,18 @@ class ClipPipeline:
             )
             return job_id
         except (InputValidationError, FrameDecodeError, EncoderError, Exception) as exc:
+            await update_job_progress(
+                db_path,
+                job_id,
+                current_stage,
+                0,
+                f"Error: {str(exc)[:200]}",
+            )
             await models.update_job(
-                self.db_path,
+                db_path,
                 job_id,
                 status="failed",
-                stage_failed=await _current_stage(self.db_path, job_id),
+                stage_failed=current_stage,
                 error_detail=str(exc),
                 flags=flags,
             )
