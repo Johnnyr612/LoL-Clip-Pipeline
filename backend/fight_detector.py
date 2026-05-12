@@ -132,7 +132,16 @@ def finish_on_kill_or_death(
 
     clip_end = min(source_duration, event_time + config.COMBAT_EVENT_END_PADDING_SEC)
     clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
-    clip_end = max(clip_end, trim.clip_start + 1.0)
+    if clip_end - trim.clip_start < config.COMBAT_EVENT_MIN_CLIP_DURATION_SEC:
+        return TrimResult(
+            clip_start=trim.clip_start,
+            clip_end=trim.clip_end,
+            fight_start=trim.fight_start,
+            fight_end=trim.fight_end,
+            fight_duration=trim.fight_duration,
+            dialog_segments=trim.dialog_segments,
+            flags=[*trim.flags, "combat_event_too_early_ignored"],
+        )
     fight_end = min(trim.fight_end, event_time)
     flags = [*trim.flags, event_flag, "clip_end_on_kill_or_death"]
     return TrimResult(
@@ -211,24 +220,26 @@ def _detect_combat_event_time(
         player_present.append(player_bar is not None)
         times.append(float(timestamps[int(index)]))
 
-    engaged = False
+    visible_enemy_samples = 0
     missing_enemy_run = 0
     missing_player_run = 0
     for idx, enemy_count in enumerate(enemy_counts):
+        engaged = visible_enemy_samples >= config.COMBAT_EVENT_MIN_VISIBLE_ENEMY_FRAMES
         if enemy_count > 0:
-            engaged = True
+            visible_enemy_samples += 1
             missing_enemy_run = 0
-        elif engaged:
+        elif visible_enemy_samples >= config.COMBAT_EVENT_MIN_VISIBLE_ENEMY_FRAMES:
             missing_enemy_run += 1
 
+        engaged = visible_enemy_samples >= config.COMBAT_EVENT_MIN_VISIBLE_ENEMY_FRAMES
         if engaged and not player_present[idx]:
             missing_player_run += 1
         else:
             missing_player_run = 0
 
-        if engaged and missing_player_run >= 2:
+        if engaged and missing_player_run >= config.COMBAT_EVENT_MISSING_FRAMES:
             return times[max(0, idx - missing_player_run + 1)], "death_event_detected"
-        if engaged and missing_enemy_run >= 2:
+        if engaged and missing_enemy_run >= config.COMBAT_EVENT_MISSING_FRAMES:
             return times[max(0, idx - missing_enemy_run + 1)], "kill_event_detected"
     return None, ""
 

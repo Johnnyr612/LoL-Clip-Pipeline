@@ -181,7 +181,8 @@ class ClipPipeline:
                 trim.clip_start,
                 trim.clip_end,
             )
-            if player_champion_score < config.HUD_PLAYER_MATCH_CONFIRM:
+            trusted_player_champion = player_champion if player_champion_score >= config.HUD_PLAYER_MATCH_CONFIRM else None
+            if trusted_player_champion is None:
                 flags.append("player_hud_champion_low_confidence")
             participants = self.minimap_detector.aggregate_detections(
                 detections,
@@ -189,7 +190,7 @@ class ClipPipeline:
                 max(0.0, trim.clip_start - config.MINIMAP_CONTEXT_BEFORE_FIGHT_SEC),
                 min(validation.duration, trim.clip_end + config.MINIMAP_CONTEXT_AFTER_FIGHT_SEC),
                 sampled_player_positions,
-                player_champion if player_champion_score >= config.HUD_PLAYER_MATCH_CONFIRM else None,
+                trusted_player_champion,
             )
             visible_enemy_count = estimate_visible_enemy_count(bundle.full_frames, bundle.timestamps_full, trim.fight_start, trim.fight_end)
             if visible_enemy_count is not None:
@@ -197,7 +198,7 @@ class ClipPipeline:
             vision_result = classify_fight_participants(bundle.full_frames, bundle.timestamps_full, trim.clip_start, trim.clip_end)
             if vision_result is not None:
                 flags.append("vision_champion_classifier")
-                participants = _apply_vision_participants(participants, vision_result)
+                participants = _apply_vision_participants(participants, vision_result, trusted_player_champion)
             flags.extend(participants.flags)
             await update_job_progress(
                 db_path,
@@ -394,15 +395,27 @@ def _cap_participants_to_visible_enemy_count(participants: FightParticipants, en
     return FightParticipants(participants.player, [], enemies, fight_type, [*participants.flags, "enemy_count_capped_by_healthbars"])
 
 
-def _apply_vision_participants(participants: FightParticipants, vision_result: VisionFightResult) -> FightParticipants:
+def _apply_vision_participants(
+    participants: FightParticipants,
+    vision_result: VisionFightResult,
+    trusted_player_champion: str | None = None,
+) -> FightParticipants:
+    player_name = vision_result.player_champion
+    flags = [*participants.flags, "champions_overridden_by_vision"]
+    if trusted_player_champion and not trusted_player_champion.startswith("unknown"):
+        player_name = trusted_player_champion
+        if vision_result.player_champion != trusted_player_champion:
+            flags.append("vision_player_override_ignored")
+
     player = ChampionResult(
-        vision_result.player_champion,
-        vision_result.confidence,
+        player_name,
+        max(vision_result.confidence, participants.player.confidence),
         "ally",
         participants.player.mean_pos,
         True,
     )
     local_enemies = {enemy.champion_name: enemy for enemy in participants.enemies}
+    vision_enemies = [name for name in vision_result.enemy_champions if name != player.champion_name]
     enemies = [
         ChampionResult(
             name,
@@ -410,10 +423,10 @@ def _apply_vision_participants(participants: FightParticipants, vision_result: V
             "enemy",
             local_enemies.get(name, ChampionResult(name, 0.0, "enemy", (0.5, 0.5))).mean_pos,
         )
-        for name in vision_result.enemy_champions
+        for name in vision_enemies
     ]
     fight_type = vision_result.fight_type or f"1v{max(1, len(enemies))}"
-    return FightParticipants(player, [], enemies, fight_type, [*participants.flags, "champions_overridden_by_vision"])
+    return FightParticipants(player, [], enemies, fight_type, flags)
 
 
 def _position_to_pixels(position: tuple[float, float] | None, frame_shape: tuple[int, ...]) -> tuple[float, float] | None:
