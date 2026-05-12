@@ -348,6 +348,7 @@ class MinimapDetector:
             team = Counter(d.team for d in track).most_common(1)[0][0]
             points = np.array([d.circle_center for d in track], dtype=np.float32)
             results.append(ChampionResult(champion_name, vote_count / len(track), team, tuple(points.mean(axis=0))))
+        results = _merge_duplicate_champions(results)
 
         valid_player_positions = [p for p in player_positions if p is not None]
         if not valid_player_positions:
@@ -374,8 +375,49 @@ class MinimapDetector:
         enemies = [r for i, r in enumerate(results) if r.team == "enemy"]
         if all(r.champion_name.startswith("unknown") for r in results):
             flags.append("no_champions_identified")
-        fight_type = f"{1 + len(allies)}v{max(1, len(enemies))}"
+        fight_type = _fight_type(player, allies, enemies)
         return FightParticipants(player, allies, enemies, fight_type, flags)
+
+
+def _merge_duplicate_champions(results: list[ChampionResult]) -> list[ChampionResult]:
+    grouped: dict[tuple[str, str], list[ChampionResult]] = {}
+    merged: list[ChampionResult] = []
+    unknown_counter = 0
+    for result in results:
+        if result.champion_name.startswith("unknown"):
+            key = (f"unknown_{unknown_counter}", result.team)
+            unknown_counter += 1
+        else:
+            key = (result.champion_name, result.team)
+        grouped.setdefault(key, []).append(result)
+
+    for group in grouped.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        weights = np.array([max(item.confidence, 0.01) for item in group], dtype=np.float32)
+        positions = np.array([item.mean_pos for item in group], dtype=np.float32)
+        mean_pos = tuple(np.average(positions, axis=0, weights=weights))
+        representative = max(group, key=lambda item: item.confidence)
+        merged.append(
+            ChampionResult(
+                representative.champion_name,
+                float(np.mean([item.confidence for item in group])),
+                representative.team,
+                mean_pos,
+                representative.is_player,
+            )
+        )
+    return merged
+
+
+def _fight_type(player: ChampionResult, allies: list[ChampionResult], enemies: list[ChampionResult]) -> str:
+    ally_pool = [player, *allies]
+    known_allies = [item for item in ally_pool if not item.champion_name.startswith("unknown")]
+    known_enemies = [item for item in enemies if not item.champion_name.startswith("unknown")]
+    ally_count = len(known_allies) if known_allies else len(ally_pool)
+    enemy_count = len(known_enemies) if known_enemies else len(enemies)
+    return f"{min(max(ally_count, 1), 5)}v{min(max(enemy_count, 1), 5)}"
 
 
 def map_pos_to_screen_hint(map_pos: tuple[float, float], frame_size: tuple[int, int]) -> tuple[float, float]:

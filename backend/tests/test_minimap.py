@@ -85,6 +85,20 @@ def test_vote_aggregation(detector: MinimapDetector):
     assert result.player.champion_name == "Aatrox"
 
 
+def test_aggregation_dedupes_champion_tracks(detector: MinimapDetector):
+    detections = [
+        [
+            RawIconDetection((50, 50), 12, "ally", "Aatrox", 0.9, False),
+            RawIconDetection((120, 120), 12, "ally", "Aatrox", 0.8, False),
+            RawIconDetection((220, 220), 12, "enemy", "Ahri", 0.9, False),
+            RawIconDetection((260, 260), 12, "enemy", "Ahri", 0.8, False),
+        ]
+    ]
+    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, [(50, 50)])
+    assert result.fight_type == "1v1"
+    assert [enemy.champion_name for enemy in result.enemies] == ["Ahri"]
+
+
 def test_augmentation_count(detector: MinimapDetector):
     assert len(detector.augmented["Aatrox"]) == 96
 

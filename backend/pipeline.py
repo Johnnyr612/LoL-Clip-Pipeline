@@ -15,7 +15,7 @@ from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
 from .fight_detector import FightDetector, apply_dialog_extension, boundaries_from_scores
 from .frame_io import FrameDecodeError, decode_video
-from .minimap_detector import ChampionResult, MinimapDetector
+from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
 from .models import update_job_progress
 
 
@@ -133,12 +133,16 @@ class ClipPipeline:
                         f"Scanning minimap frames {index}/{total_detection_frames}...",
                     )
             player_positions = [self.minimap_detector.find_white_box(frame) for frame in bundle.minimap_frames]
+            sampled_player_positions = [
+                _position_to_pixels(player_positions[int(i)], bundle.minimap_frames[int(i)].shape)
+                for i in minimap_indices
+            ]
             participants = self.minimap_detector.aggregate_detections(
                 detections,
                 detection_timestamps,
                 0,
                 validation.duration,
-                [player_positions[int(i)] for i in minimap_indices],
+                sampled_player_positions,
             )
             flags.extend(participants.flags)
             if self.minimap_detector.minimap_boundary_estimated:
@@ -260,6 +264,7 @@ class ClipPipeline:
                 participants.fight_type,
                 trim.fight_duration,
                 dialog_text,
+                _minimap_champion_context(participants),
             )
             flags.extend(captions.flags)
             await update_job_progress(
@@ -328,3 +333,22 @@ def _normalize_enemy_positions(enemies: list[ChampionResult]) -> list[ChampionRe
             y = y / 540.0
         normalized.append(ChampionResult(enemy.champion_name, enemy.confidence, enemy.team, (float(x), float(y)), enemy.is_player))
     return normalized
+
+
+def _position_to_pixels(position: tuple[float, float] | None, frame_shape: tuple[int, ...]) -> tuple[float, float] | None:
+    if position is None:
+        return None
+    height, width = frame_shape[:2]
+    return (float(position[0] * width), float(position[1] * height))
+
+
+def _minimap_champion_context(participants: FightParticipants) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for champion in [participants.player, *participants.allies, *participants.enemies]:
+        name = champion.champion_name
+        if not name or name.startswith("unknown") or name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    return names

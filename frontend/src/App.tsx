@@ -3,9 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { CaptionEditor } from "./CaptionEditor";
 import { JobDashboard } from "./JobDashboard";
-import { MinimapDisplay } from "./MinimapDisplay";
 import { SocialConnect } from "./SocialConnect";
-import { TrainingPanel } from "./TrainingPanel";
 import { VideoPreview } from "./VideoPreview";
 import type { JobRecord } from "./types";
 
@@ -26,13 +24,9 @@ function App() {
 
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-5 py-5 lg:grid-cols-[360px_1fr]">
         <JobDashboard onSelectJob={setSelectedJob} selectedJob={selectedJob} />
-        <section className="grid gap-4">
+        <section className="grid min-w-0 gap-4">
           <VideoPreview job={selectedJob} />
-          <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
-            <MinimapDisplay job={selectedJob} />
-            <CaptionEditor job={selectedJob} />
-          </div>
-          <TrainingPanel />
+          <CaptionEditor job={selectedJob} />
         </section>
       </div>
     </main>
