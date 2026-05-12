@@ -41,3 +41,8 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+.venv.broken-*/
+python-3.12*.exe
+.python312/
+
