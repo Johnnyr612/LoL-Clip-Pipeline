@@ -16,7 +16,7 @@ function App() {
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
           <div>
             <h1 className="text-xl font-semibold tracking-normal">LoL Clip Pipeline</h1>
-            <p className="text-sm text-slate-600">Fight detection, adaptive 3:4 crop, captions, and publishing.</p>
+            <p className="text-sm text-slate-600">Fight detection, adaptive 3:4 crop, descriptions, and publishing.</p>
           </div>
           <SocialConnect />
         </div>

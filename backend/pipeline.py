@@ -284,7 +284,7 @@ class ClipPipeline:
                 job_id,
                 "stage6_caption",
                 10,
-                "Generating TikTok caption...",
+                "Generating TikTok description...",
             )
             dialog_text = " ".join(segment.text for segment in trim.dialog_segments)
             await update_job_progress(
@@ -292,7 +292,7 @@ class ClipPipeline:
                 job_id,
                 "stage6_caption",
                 50,
-                "Generating Instagram caption...",
+                "Generating Instagram description...",
             )
             captions = self.captioner.generate(
                 participants.player.champion_name,
@@ -308,7 +308,7 @@ class ClipPipeline:
                 job_id,
                 "stage6_caption",
                 100,
-                "Captions generated successfully",
+                "Descriptions generated successfully",
             )
             await models.update_job(
                 db_path,
