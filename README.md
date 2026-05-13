@@ -5,8 +5,8 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 ## What It Does
 
 - Accepts an existing `.mp4` clip path through the dashboard or API.
-- Extracts full-frame and minimap frames.
-- Detects likely fight timing with a trained VideoMAE checkpoint, falling back to heuristics if needed.
+- Extracts full-frame and minimap frames with OpenCV.
+- Detects likely fight timing with a fine-tuned VideoMAE checkpoint, falling back to a heuristic score when the checkpoint is missing or inference fails.
 - Detects player/enemy context from minimap icons, HUD portraits, health bars, and optional vision-model classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
@@ -15,22 +15,81 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 
 ## Current Limitations
 
-- Caption generation depends on upstream detection quality. The caption model does not inspect video frames directly.
-- The local caption model file is not included. Without `models/llama-3-8b-instruct.Q4_K_M.gguf`, the app uses fallback captions.
 - Champion recognition is still the main weak spot. The current minimap classifier uses champion icons, synthetic augmentation, pHash/template matching, and an optional classifier cache.
-- The minimap GAN is not used directly by captions. It only helps if you explicitly rebuild the minimap classifier cache with GAN samples.
-- The native `frame_decoder.dll` is not present by default. The app works through the OpenCV fallback, but native decoding would be faster.
+- Caption quality depends on upstream detection quality. The local caption model receives fight metadata and dialog text; it does not inspect video frames directly.
+- The current minimap GAN is an augmentation experiment. It can generate minimap-style feature samples, but it is not accurately detecting the correct champions yet.
 - Upload endpoints exist, but social auth/token setup is currently environment-variable based.
 
-## Active Improvement Direction
+## Caption Generation
 
-The best next improvement is a supervised minimap champion classifier using:
+The app looks for a local GGUF model at:
+
+```text
+models/llama-3-8b-instruct.Q4_K_M.gguf
+```
+
+That file is intentionally ignored by Git because it is large. Put the model in `models/` to test whether local Llama generation improves descriptions.
+
+When the GGUF file is missing, times out, or returns invalid JSON, the app uses deterministic fallback captions from `backend/caption_gen.py`. The fallback builds TikTok and Instagram payloads from the detected player champion, enemy champions, fight type, and minimap context. It returns:
+
+- `caption`: a short hook plus body text.
+- `hashtags`: fixed gaming and League hashtags.
+- `hook_line`: the first-line hook, for example a duel hook when one enemy is known.
+
+Fallback flags are stored as `caption_model_unavailable` or `caption_fallback`.
+
+## Fight Detection And VideoMAE
+
+The current fight detector loads `checkpoints/videomae_lol_best.pt` when present. The model is based on `MCG-NJU/videomae-base` with a small binary classifier head that predicts fight versus non-fight for 16-second windows.
+
+Fine-tuning is handled by `backend/trainer_worker.py`:
+
+- Labels provide `fight_start` and `fight_end` for each training clip.
+- The dataset samples 16-second windows from each clip.
+- A window is positive when at least half of its seconds overlap the labeled fight.
+- A window is negative when it has minimal overlap with the labeled fight.
+- Positive and negative windows are balanced before training.
+- Frames are resized to 224x224, normalized with ImageNet stats, and passed through VideoMAE.
+- The classifier is trained with AdamW, cosine warmup scheduling, gradient accumulation, validation loss tracking, and early stopping.
+
+The first training pass overfit because the dataset was too small and too easy: many negative windows came from the same source clips and did not represent enough real non-fight gameplay. That produced a checkpoint that could memorize the training distribution better than it generalized to new clips.
+
+## Training V2 Plan
+
+Future fight-boundary retraining should use the `training-v2` branch. That branch adds a better negative-sample workflow:
+
+1. Build additional negatives from full clips with `backend/prepare_negatives.py`.
+2. Save precomputed frame arrays under `precomputed_v2/`.
+3. Write expanded labels to `data/trainer_labels_v2.json`.
+4. Train from the `training-v2` branch using those labels and `precomputed_v2`.
+
+Example v2 preparation command:
+
+```powershell
+.\.venv\Scripts\python.exe backend\prepare_negatives.py --clips-dir "D:\Medal\Clips\League of Legends" --labels data\trainer_labels_all.json --output-labels data\trainer_labels_v2.json --precomputed-dir precomputed_v2 --max-negatives-per-clip 3
+```
+
+The goal for v2 is to reduce overfitting by giving VideoMAE more varied non-fight windows and a cleaner train/validation split before replacing `checkpoints/videomae_lol_best.pt`.
+
+## Champion Detection Future Work
+
+The next major improvement should be a supervised minimap champion detector/classifier. The current approach works from:
 
 - `data/minimap_icons/images`
 - `data/minimap_icons/champions_manifest.json`
-- low-confidence real minimap crops collected from actual clips
+- synthetic minimap-style augmentation
+- optional low-confidence real minimap crops from actual clips
 
-The GAN can remain an augmentation experiment, but labeled synthetic and real examples should become the main source of champion identity training.
+Planned direction:
+
+- Keep Riot/Data Dragon assets current so new champions are not missing.
+- Use a match champion whitelist when available, ideally the 10 champions from Riot's local Live Client Data API during recording.
+- Separate icon localization from champion identity: first find minimap champion bubbles, then classify cropped icons.
+- Use temporal voting across frames instead of trusting a single crop.
+- Collect real hard examples from failed clips and retrain on them.
+- Take inspiration from Maknee's `LeagueMinimapDetectionCNN`, especially its synthetic minimap generation and Faster R-CNN-style detector, while retraining on the current champion set instead of relying on old patch weights.
+
+The existing minimap GAN can stay as an experiment for augmentation, but the practical path is labeled synthetic data plus real low-confidence crops.
 
 ## Requirements
 
@@ -81,7 +140,7 @@ http://127.0.0.1:5173
 
 Paste a full local `.mp4` path into the dashboard and start a job.
 
-## Optional Model Files
+## Local Model Files
 
 These files are intentionally not committed:
 
@@ -125,11 +184,9 @@ Train the minimap mask GAN:
 
 ## Project Layout
 
-- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, captions, upload helpers, training coordinator.
+- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, captions, upload helpers, and training coordinator.
 - `frontend/`: React/Vite dashboard.
 - `data/minimap_icons/`: champion icon source data used by minimap detection.
-- `tools/`: minimap classifier/GAN data tools.
-- `frame_decoder/`: optional native decoder source.
+- `tools/`: minimap classifier and GAN data tools.
 - `checkpoints/`: local model checkpoints, ignored by Git.
 - `models/`: local caption model files, ignored by Git.
-
