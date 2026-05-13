@@ -20,7 +20,7 @@ def test_caption_prompt_includes_original_minimap_context():
 
 def test_fallback_caption_uses_minimap_context_when_enemies_unknown(monkeypatch):
     generator = CaptionGenerator()
-    monkeypatch.setattr(generator, "model_path", type("MissingPath", (), {"exists": lambda self: False})())
+    monkeypatch.setattr(generator, "api_key", "")
 
     result = generator.generate(
         "Swain",
@@ -32,3 +32,4 @@ def test_fallback_caption_uses_minimap_context_when_enemies_unknown(monkeypatch)
     )
 
     assert "Swain took the Jax duel" in result.captions["tiktok"]["caption"]
+    assert "caption_api_key_missing" in result.flags

@@ -16,39 +16,37 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 ## Current Limitations
 
 - Champion recognition is still the main weak spot. The current minimap classifier uses champion icons, synthetic augmentation, pHash/template matching, and an optional classifier cache.
-- Caption quality depends on upstream detection quality. The local caption model receives fight metadata and dialog text; it does not inspect video frames directly.
+- Caption quality depends on upstream detection quality. The OpenAI caption request receives fight metadata and dialog text; it does not inspect video frames directly.
 - The current minimap GAN is an augmentation experiment. It can generate minimap-style feature samples, but it is not accurately detecting the correct champions yet.
 - Upload endpoints exist, but social auth/token setup is currently environment-variable based.
 
 ## Caption Generation
 
-The app looks for a local GGUF model at:
-
-```text
-models/llama-3-8b-instruct.Q4_K_M.gguf
-```
-
-That file is intentionally ignored by Git because it is large. To enable local Llama captions, create the `models/` folder and download or place the model there:
+Captions are generated with the OpenAI API using `OPENAI_API_KEY`. Set it in your environment before starting the backend:
 
 ```powershell
-mkdir models
+$env:OPENAI_API_KEY = "sk-..."
 ```
 
-Expected final path:
+By default the app uses `gpt-4o-mini` for captions. You can override that without code changes:
 
-```text
-models/llama-3-8b-instruct.Q4_K_M.gguf
+```powershell
+$env:LOL_CLIP_CAPTION_MODEL = "gpt-4o-mini"
 ```
 
-The current tested file is Llama 3 8B Instruct, Q4_K_M GGUF. Without this file, the app will still run, but caption generation will use the fallback template generator.
+The same `OPENAI_API_KEY` also enables the optional OpenAI vision fallback for participant classification. The vision model can be overridden separately:
 
-When the GGUF file is missing, times out, or returns invalid JSON, the app uses deterministic fallback captions from `backend/caption_gen.py`. The fallback builds TikTok and Instagram payloads from the detected player champion, enemy champions, fight type, and minimap context. It returns:
+```powershell
+$env:LOL_CLIP_VISION_MODEL = "gpt-4o-mini"
+```
+
+When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns invalid JSON, the app uses deterministic fallback captions from `backend/caption_gen.py`. The fallback builds TikTok and Instagram payloads from the detected player champion, enemy champions, fight type, and minimap context. It returns:
 
 - `caption`: a short hook plus body text.
 - `hashtags`: fixed gaming and League hashtags.
 - `hook_line`: the first-line hook, for example a duel hook when one enemy is known.
 
-Fallback flags are stored as `caption_model_unavailable` or `caption_fallback`.
+Fallback flags are stored as `caption_api_key_missing` or `caption_fallback`.
 
 ## Fight Detection And VideoMAE
 
@@ -109,7 +107,9 @@ The existing minimap GAN can stay as an experiment for augmentation, but the pra
 - Node.js and npm
 - FFmpeg and ffprobe on `PATH`
 - Optional: CUDA-enabled PyTorch for faster VideoMAE/GAN training
-- Optional: `OPENAI_API_KEY` for vision-based participant classification
+- `OPENAI_API_KEY` for generated captions.
+- Optional: `LOL_CLIP_CAPTION_MODEL` to override the caption model.
+- Optional: `LOL_CLIP_VISION_MODEL` for vision-based participant classification.
 
 ## Setup
 
@@ -152,15 +152,14 @@ http://127.0.0.1:5173
 
 Paste a full local `.mp4` path into the dashboard and start a job.
 
-## Local Model Files
+## Local Checkpoint Files
 
 These files are intentionally not committed:
 
 - `checkpoints/videomae_lol_best.pt`
 - `checkpoints/minimap_mask_gan.pt`
-- `models/llama-3-8b-instruct.Q4_K_M.gguf`
 
-If the VideoMAE checkpoint is missing, fight detection falls back to heuristics. If the Llama model is missing, captions use the fallback generator.
+If the VideoMAE checkpoint is missing, fight detection falls back to heuristics. If the OpenAI API key is missing, captions use the fallback generator.
 
 ## Useful Commands
 
@@ -201,4 +200,3 @@ Train the minimap mask GAN:
 - `data/minimap_icons/`: champion icon source data used by minimap detection.
 - `tools/`: minimap classifier and GAN data tools.
 - `checkpoints/`: local model checkpoints, ignored by Git.
-- `models/`: local caption model files, ignored by Git.

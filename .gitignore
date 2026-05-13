@@ -16,10 +16,6 @@ checkpoints/videomae_lol_best.pt
 checkpoints/*.pt
 checkpoints/*.pth
 
-# Llama model files
-models/*.gguf
-models/*.bin
-
 # Precomputed training frames (large numpy arrays)
 precomputed/
 precomputed_v2/

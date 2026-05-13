@@ -5,6 +5,8 @@ import threading
 from dataclasses import dataclass
 from typing import Sequence
 
+import httpx
+
 from . import config
 
 
@@ -90,7 +92,8 @@ Respond with valid JSON only, no markdown, no preamble:
 
 class CaptionGenerator:
     def __init__(self) -> None:
-        self.model_path = config.LLAMA_MODEL_PATH
+        self.api_key = config.OPENAI_API_KEY
+        self.model = config.CAPTION_MODEL
 
     def _generate_one(
         self,
@@ -102,20 +105,32 @@ class CaptionGenerator:
         fight_duration: float,
         dialog_text: str,
     ) -> dict:
-        if not self.model_path.exists():
-            raise FileNotFoundError(self.model_path)
-        from llama_cpp import Llama
-
-        llm = Llama(model_path=str(self.model_path), n_gpu_layers=0, verbose=False)
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
         prompt = _build_prompt(player_champion, enemy_names, minimap_champions, fight_type, fight_duration, dialog_text, platform)
-        response = llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": config.CAPTION_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
+        payload = {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": config.CAPTION_SYSTEM_PROMPT}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                },
             ],
-            temperature=0.8,
-        )
-        content = response["choices"][0]["message"]["content"]
+            "temperature": 0.8,
+            "text": {"format": {"type": "json_object"}},
+        }
+        with httpx.Client(timeout=config.CAPTION_TIMEOUT_SEC) as client:
+            response = client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            response.raise_for_status()
+        content = _parse_response_text(response.json())
         return json.loads(content)
 
     def generate(
@@ -129,8 +144,8 @@ class CaptionGenerator:
     ) -> CaptionResult:
         flags: list[str] = []
         minimap_champions = minimap_champions or []
-        if not self.model_path.exists():
-            flags.append("caption_model_unavailable")
+        if not self.api_key:
+            flags.append("caption_api_key_missing")
             return CaptionResult(
                 {
                     "tiktok": _fallback_caption(player_champion, enemy_names, fight_type, "tiktok", minimap_champions),
@@ -161,3 +176,14 @@ class CaptionGenerator:
         if errors:
             flags.append("caption_fallback")
         return CaptionResult(results, flags)
+
+
+def _parse_response_text(payload: dict) -> str:
+    text = payload.get("output_text")
+    if isinstance(text, str):
+        return text
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") in {"output_text", "text"} and isinstance(content.get("text"), str):
+                return content["text"]
+    raise ValueError("OpenAI response did not include output text")
