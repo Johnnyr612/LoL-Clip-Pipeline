@@ -42,6 +42,17 @@ function durationFromJob(job: JobRecord | null) {
   return Math.floor((updated - created) / 1000);
 }
 
+function normalizeSourcePath(value: string) {
+  let next = value.trim();
+  while (next.length >= 2) {
+    const first = next[0];
+    const last = next[next.length - 1];
+    if (!((first === `"` && last === `"`) || (first === `'` && last === `'`))) break;
+    next = next.slice(1, -1).trim();
+  }
+  return next;
+}
+
 export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const [sourcePath, setSourcePath] = React.useState("");
   const [jobId, setJobId] = React.useState("");
@@ -87,7 +98,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   }, [job?.status]);
 
   async function start(pathOverride?: string) {
-    const path = pathOverride ?? sourcePath;
+    const path = normalizeSourcePath(pathOverride ?? sourcePath);
     setBusy(true);
     setErrorMessage("");
     try {

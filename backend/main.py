@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -48,6 +48,14 @@ class TrainRequest(BaseModel):
 
 class UploadRequest(BaseModel):
     job_id: str
+
+
+def _normalize_source_path(value: object) -> Path:
+    raw = str(value or "").strip()
+    quote_pairs = {('"', '"'), ("'", "'")}
+    while len(raw) >= 2 and (raw[0], raw[-1]) in quote_pairs:
+        raw = raw[1:-1].strip()
+    return Path(raw)
 
 
 @app.on_event("startup")
@@ -97,13 +105,26 @@ async def get_job(job_id: str) -> dict:
     return job
 
 
+@app.get("/jobs/{job_id}/source")
+async def get_job_source(job_id: str) -> FileResponse:
+    job = await models.get_job(config.DB_PATH, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    source_path = Path(job.get("source_path") or "")
+    if not source_path.exists() or not source_path.is_file():
+        raise HTTPException(status_code=404, detail="Source video not found")
+    if source_path.suffix.lower() != ".mp4":
+        raise HTTPException(status_code=415, detail="Only .mp4 previews are supported")
+    return FileResponse(source_path, media_type="video/mp4", filename=source_path.name)
+
+
 @app.post("/process")
 async def process_existing(payload: dict) -> dict:
     if pipeline is None:
         raise HTTPException(
             status_code=503, detail="Pipeline not ready"
         )
-    source_path = Path(payload.get("source_path", ""))
+    source_path = _normalize_source_path(payload.get("source_path", ""))
 
     # Validate input before starting background task
     try:
