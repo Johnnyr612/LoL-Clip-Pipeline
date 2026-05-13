@@ -50,6 +50,11 @@ def test_velocity_clamp():
     assert np.all(np.abs(np.diff(values)) <= config.MAX_PAN_SPEED_PX)
 
 
+def test_crop_motion_deadband_holds_small_jitter():
+    values = smooth_crop_values([555, 565, 548, 570], [960, 960, 960, 960])
+    assert len(set(values.tolist())) == 1
+
+
 def test_no_enemy_fallback():
     assert compute_threat_sx((0.5, 0.5), [], (1920, 1080)) == 960
 

@@ -100,6 +100,9 @@ def smooth_crop_values(values: Sequence[float], player_sx_values: Sequence[float
         x[idx] = clamp_crop_x(float(x[idx]), frame_w)
     for idx in range(len(x) - 1):
         delta = x[idx + 1] - x[idx]
+        if abs(delta) < config.CROP_MOTION_DEADBAND_PX:
+            x[idx + 1] = x[idx]
+            delta = 0
         if abs(delta) > config.MAX_PAN_SPEED_PX:
             x[idx + 1] = x[idx] + np.sign(delta) * config.MAX_PAN_SPEED_PX
         x[idx + 1] = enforce_player_framing(float(x[idx + 1]), float(player_sx_values[idx + 1]))
