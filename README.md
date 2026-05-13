@@ -28,7 +28,19 @@ The app looks for a local GGUF model at:
 models/llama-3-8b-instruct.Q4_K_M.gguf
 ```
 
-That file is intentionally ignored by Git because it is large. Put the model in `models/` to test whether local Llama generation improves descriptions.
+That file is intentionally ignored by Git because it is large. To enable local Llama captions, create the `models/` folder and download or place the model there:
+
+```powershell
+mkdir models
+```
+
+Expected final path:
+
+```text
+models/llama-3-8b-instruct.Q4_K_M.gguf
+```
+
+The current tested file is Llama 3 8B Instruct, Q4_K_M GGUF. Without this file, the app will still run, but caption generation will use the fallback template generator.
 
 When the GGUF file is missing, times out, or returns invalid JSON, the app uses deterministic fallback captions from `backend/caption_gen.py`. The fallback builds TikTok and Instagram payloads from the detected player champion, enemy champions, fight type, and minimap context. It returns:
 
