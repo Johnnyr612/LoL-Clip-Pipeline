@@ -117,10 +117,28 @@ The existing minimap GAN can stay as an experiment for augmentation, but the pra
 - Python 3.12
 - Node.js and npm
 - FFmpeg and ffprobe on `PATH`
+- Git LFS for large checkpoint and sample video files.
 - Optional: CUDA-enabled PyTorch for faster VideoMAE/GAN training
 - `OPENAI_API_KEY` for generated descriptions.
 - Optional: `LOL_CLIP_CAPTION_MODEL` to override the caption model.
 - Optional: `LOL_CLIP_VISION_MODEL` for vision-based participant classification.
+
+## Included Large Files
+
+This project includes trained weights and a sample clip through Git LFS:
+
+- `checkpoints/videomae_lol_best.pt`: fine-tuned VideoMAE fight detector.
+- `checkpoints/minimap_mask_gan.pt`: current minimap mask GAN experiment.
+- `TestClip.mp4`: sample input clip for testing the pipeline.
+
+`TestClip.mp4` was not part of the training set. It is included only as a reproducible test clip so a new user can run the pipeline end to end after setup.
+
+After cloning, make sure Git LFS has downloaded the real files:
+
+```powershell
+git lfs install
+git lfs pull
+```
 
 ## Setup
 
@@ -163,14 +181,35 @@ http://127.0.0.1:5173
 
 Paste a full local `.mp4` path into the dashboard and start a job.
 
+To test with the included sample clip, paste the full path to:
+
+```text
+TestClip.mp4
+```
+
+For example, from this project directory:
+
+```text
+C:\path\to\New project\TestClip.mp4
+```
+
 ## Local Checkpoint Files
 
-These files are intentionally not committed:
+The trained checkpoint files are intentionally committed with Git LFS so users can run the pipeline without retraining:
 
 - `checkpoints/videomae_lol_best.pt`
 - `checkpoints/minimap_mask_gan.pt`
 
 If the VideoMAE checkpoint is missing, fight detection falls back to heuristics. If the OpenAI API key is missing, descriptions use the fallback generator.
+
+## Secrets
+
+Do not commit real API keys. Local environment files are ignored by Git:
+
+- `.env`
+- `.env.*`
+
+Use `.env.example` as a template or set `OPENAI_API_KEY` directly in your shell before starting the backend.
 
 ## Useful Commands
 

@@ -11,10 +11,10 @@ frontend/dist/
 *.sqlite3
 *.log
 
-# Model checkpoints - too large for GitHub (344MB+)
-checkpoints/videomae_lol_best.pt
-checkpoints/*.pt
-checkpoints/*.pth
+# Local secrets
+.env
+.env.*
+!.env.example
 
 # Precomputed training frames (large numpy arrays)
 precomputed/
@@ -28,7 +28,6 @@ training_logs/
 
 # Minimap GAN datasets and generated caches
 data/minimap_gan/
-checkpoints/minimap_mask_gan.pt
 
 # Jupyter notebooks (local only)
 *.ipynb
