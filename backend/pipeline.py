@@ -284,16 +284,9 @@ class ClipPipeline:
                 job_id,
                 "stage6_caption",
                 10,
-                "Generating TikTok description...",
+                "Generating description...",
             )
             dialog_text = " ".join(segment.text for segment in trim.dialog_segments)
-            await update_job_progress(
-                db_path,
-                job_id,
-                "stage6_caption",
-                50,
-                "Generating Instagram description...",
-            )
             captions = self.captioner.generate(
                 participants.player.champion_name,
                 [enemy.champion_name for enemy in participants.enemies],

@@ -83,11 +83,6 @@ CAPTION_MODEL = os.environ.get("LOL_CLIP_CAPTION_MODEL", "gpt-4o-mini")
 VISION_CLASSIFIER_MODEL = os.environ.get("LOL_CLIP_VISION_MODEL", "gpt-4o-mini")
 VISION_CLASSIFIER_TIMEOUT_SEC = 45
 VISION_CLASSIFIER_MIN_CONFIDENCE = 0.60
-TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "")
-TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET", "")
-TIKTOK_REDIRECT_URI = os.environ.get("TIKTOK_REDIRECT_URI", "http://127.0.0.1:8000/auth/tiktok/callback")
-TIKTOK_SCOPES = os.environ.get("TIKTOK_SCOPES", "user.info.basic,video.upload,video.publish")
-TIKTOK_PRIVACY_LEVEL = os.environ.get("TIKTOK_PRIVACY_LEVEL", "SELF_ONLY")
 
 _APPDATA_BASE = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
 APPDATA_DIR = _APPDATA_BASE / "LoLClipApp"
@@ -98,8 +93,8 @@ OUTPUT_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "LoLC
 DB_PATH = APPDATA_DIR / "lol_clip_app.sqlite3"
 
 CAPTION_SYSTEM_PROMPT = (
-    "You are a viral gaming content creator specializing in League of Legends "
-    "TikTok and Instagram Reels. You write captions that maximize engagement, "
+    "You are a viral gaming content creator specializing in League of Legends clips. "
+    "You write descriptions that maximize engagement, "
     "views, and follows. You understand gaming culture, LoL memes, champion lore, "
     "and what makes short-form gaming content go viral. You never use generic "
     "phrases. You never hallucinate champion names."

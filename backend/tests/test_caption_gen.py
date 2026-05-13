@@ -11,7 +11,6 @@ def test_caption_prompt_includes_original_minimap_context():
         "1v2",
         12.5,
         "",
-        "tiktok",
     )
 
     assert "Champions actively fighting or collapsing on the fight from original minimap/HUD: Aatrox, Ahri, Thresh" in prompt
@@ -31,5 +30,5 @@ def test_fallback_caption_uses_minimap_context_when_enemies_unknown(monkeypatch)
         ["Swain", "Jax"],
     )
 
-    assert "Swain took the Jax duel" in result.captions["tiktok"]["caption"]
+    assert "Swain took the Jax duel" in result.captions["default"]["caption"]
     assert "caption_api_key_missing" in result.flags

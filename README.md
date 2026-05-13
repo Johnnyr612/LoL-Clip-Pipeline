@@ -1,6 +1,6 @@
 # LoL Clip Pipeline
 
-Local pipeline for turning League of Legends source clips into vertical short-form videos with fight detection, adaptive cropping, descriptions, and optional publishing.
+Local pipeline for turning League of Legends source clips into vertical short-form videos with fight detection, adaptive cropping, and generated descriptions.
 
 ## What It Does
 
@@ -10,7 +10,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Detects player/enemy context from minimap icons, HUD portraits, health bars, and optional vision-model classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
-- Generates TikTok and Instagram descriptions from detected fight context.
+- Generates a social-ready description from detected fight context.
 - Stores job state, progress, flags, output paths, and descriptions in SQLite.
 
 ## Current Limitations
@@ -18,7 +18,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Champion recognition is still the main weak spot. The current minimap classifier uses champion icons, synthetic augmentation, pHash/template matching, and an optional classifier cache.
 - Description quality depends on upstream detection quality. The OpenAI description request receives fight metadata and dialog text; it does not inspect video frames directly.
 - The current minimap GAN is an augmentation experiment. It can generate minimap-style feature samples, but it is not accurately detecting the correct champions yet.
-- TikTok publishing requires a configured TikTok developer app and the Content Posting API scopes.
+- Social publishing is future work; the current app focuses on local clip generation and description drafting.
 
 ## Description Generation
 
@@ -40,7 +40,7 @@ The same `OPENAI_API_KEY` also enables the optional OpenAI vision fallback for p
 $env:LOL_CLIP_VISION_MODEL = "gpt-4o-mini"
 ```
 
-When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns invalid JSON, the app uses deterministic fallback descriptions from `backend/caption_gen.py`. The fallback builds TikTok and Instagram payloads from the detected player champion, enemy champions, fight type, and minimap context. It returns:
+When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns invalid JSON, the app uses a deterministic fallback description from `backend/caption_gen.py`. The fallback builds a payload from the detected player champion, enemy champions, fight type, and minimap context. It returns:
 
 - `caption`: a short hook plus body text.
 - `hashtags`: fixed gaming and League hashtags.
@@ -48,24 +48,16 @@ When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns
 
 Fallback flags are stored as `caption_api_key_missing` or `caption_fallback`.
 
-## TikTok Publishing
+## Future Social Integration
 
-The dashboard can connect a TikTok account through TikTok OAuth when these environment variables are set before the backend starts:
+TikTok and Instagram publishing are intentionally not wired into the current app. They should be revisited after clip quality, champion detection, and description generation are stable.
 
-```powershell
-$env:TIKTOK_CLIENT_KEY = "..."
-$env:TIKTOK_CLIENT_SECRET = "..."
-$env:TIKTOK_REDIRECT_URI = "http://127.0.0.1:8000/auth/tiktok/callback"
-```
+Future work should include:
 
-The requested default scopes are `user.info.basic,video.upload,video.publish`. You can override them with `TIKTOK_SCOPES`.
-
-TikTok actions in the Description panel:
-
-- `Post`: uses TikTok Direct Post with the generated description.
-- `Save draft`: uploads the video to the TikTok inbox so it can be finished in the TikTok app. TikTok's inbox upload flow may not prefill the description, so the backend returns it in the response for copying if needed.
-
-Direct posting uses `TIKTOK_PRIVACY_LEVEL`, defaulting to `SELF_ONLY`. TikTok may restrict unaudited apps to private posting.
+- TikTok OAuth account connection.
+- TikTok draft upload or direct post using the generated description.
+- Instagram/Reels publishing once a public video URL flow is available.
+- Safe token storage, refresh handling, and clear publishing status in the dashboard.
 
 ## Fight Detection And VideoMAE
 
@@ -214,7 +206,7 @@ Train the minimap mask GAN:
 
 ## Project Layout
 
-- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, descriptions, upload helpers, and training coordinator.
+- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, descriptions, and training coordinator.
 - `frontend/`: React/Vite dashboard.
 - `data/minimap_icons/`: champion icon source data used by minimap detection.
 - `tools/`: minimap classifier and GAN data tools.

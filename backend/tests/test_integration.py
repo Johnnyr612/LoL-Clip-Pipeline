@@ -47,7 +47,7 @@ async def test_synthetic_pipeline_stages_1_to_6(tmp_path):
     assert row["status"] == "complete"
     assert row["stage_failed"] is None
     captions = json.loads(row["captions"])
-    assert {"caption", "hashtags", "hook_line"} <= captions["tiktok"].keys()
+    assert {"caption", "hashtags", "hook_line"} <= captions["default"].keys()
     assert row["output_path"]
 
     probe = subprocess.run(
