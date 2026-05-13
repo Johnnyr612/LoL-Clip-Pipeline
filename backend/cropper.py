@@ -39,6 +39,16 @@ def enforce_safe_zone(crop_x: float, player_sx: float) -> float:
     return crop_x
 
 
+def enforce_center_preference(crop_x: float, player_sx: float) -> float:
+    crop_center = crop_x + config.CROP_W / 2
+    offset = player_sx - crop_center
+    if offset < -config.PLAYER_CENTER_DEADZONE_PX:
+        crop_x = player_sx + config.PLAYER_CENTER_DEADZONE_PX - config.CROP_W / 2
+    elif offset > config.PLAYER_CENTER_DEADZONE_PX:
+        crop_x = player_sx - config.PLAYER_CENTER_DEADZONE_PX - config.CROP_W / 2
+    return crop_x
+
+
 def clamp_crop_x(crop_x: float, frame_w: int = 1920) -> int:
     return int(np.clip(round(crop_x), 0, frame_w - config.CROP_W))
 
@@ -86,15 +96,20 @@ def smooth_crop_values(values: Sequence[float], player_sx_values: Sequence[float
         return x
     x = gaussian_filter1d(x, sigma=config.GAUSSIAN_SIGMA, mode="nearest")
     for idx, player_sx in enumerate(player_sx_values):
-        x[idx] = enforce_safe_zone(float(x[idx]), float(player_sx))
+        x[idx] = enforce_player_framing(float(x[idx]), float(player_sx))
         x[idx] = clamp_crop_x(float(x[idx]), frame_w)
     for idx in range(len(x) - 1):
         delta = x[idx + 1] - x[idx]
         if abs(delta) > config.MAX_PAN_SPEED_PX:
             x[idx + 1] = x[idx] + np.sign(delta) * config.MAX_PAN_SPEED_PX
-        x[idx + 1] = enforce_safe_zone(float(x[idx + 1]), float(player_sx_values[idx + 1]))
+        x[idx + 1] = enforce_player_framing(float(x[idx + 1]), float(player_sx_values[idx + 1]))
         x[idx + 1] = clamp_crop_x(float(x[idx + 1]), frame_w)
     return x
+
+
+def enforce_player_framing(crop_x: float, player_sx: float) -> float:
+    crop_x = enforce_safe_zone(crop_x, player_sx)
+    return enforce_center_preference(crop_x, player_sx)
 
 
 class AdaptiveCropper:
@@ -107,6 +122,8 @@ class AdaptiveCropper:
         player_positions: Sequence[tuple[float, float] | None],
         enemies: Sequence[ChampionResult],
         fight_type: str,
+        player_screen_x_positions: Sequence[float | None] | None = None,
+        threat_screen_x_positions: Sequence[float | None] | None = None,
     ) -> list[CropKeyframe]:
         frame_h, frame_w = frames.shape[1:3]
         key_times = np.arange(clip_start, clip_end + 1e-6, config.KEYFRAME_INTERVAL_SEC)
@@ -121,11 +138,21 @@ class AdaptiveCropper:
             if player_pos is None:
                 player_pos = previous_player_pos
             previous_player_pos = player_pos
-            player_sx = map_pos_to_screen_hint(player_pos, (frame_w, frame_h))[0]
-            threat_sx = compute_threat_sx(player_pos, enemies, (frame_w, frame_h))
+            detected_player_sx = (
+                player_screen_x_positions[min(frame_idx, len(player_screen_x_positions) - 1)]
+                if player_screen_x_positions
+                else None
+            )
+            player_sx = float(detected_player_sx) if detected_player_sx is not None else map_pos_to_screen_hint(player_pos, (frame_w, frame_h))[0]
+            detected_threat_sx = (
+                threat_screen_x_positions[min(frame_idx, len(threat_screen_x_positions) - 1)]
+                if threat_screen_x_positions
+                else None
+            )
+            threat_sx = float(detected_threat_sx) if detected_threat_sx is not None else compute_threat_sx(player_pos, enemies, (frame_w, frame_h))
             flow_sx = optical_flow_centroid(previous_frame, frame, player_sx)
             target = blend_target(fight_type, player_sx, threat_sx, flow_sx)
-            crop_x = enforce_safe_zone(target - config.CROP_W / 2, player_sx)
+            crop_x = enforce_player_framing(target - config.CROP_W / 2, player_sx)
             raw_x.append(clamp_crop_x(crop_x, frame_w))
             player_sx_values.append(player_sx)
             previous_frame = frame

@@ -219,6 +219,29 @@ def estimate_visible_enemy_count(
     return int(max(1, min(5, round(float(np.median(counts))))))
 
 
+def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[float | None], list[float | None]]:
+    player_positions: list[float | None] = []
+    threat_positions: list[float | None] = []
+    for frame in full_frames:
+        red_bars, green_bars = _combat_health_bars(frame)
+        player_bar = _select_player_health_bar(green_bars)
+        if player_bar is None:
+            player_positions.append(None)
+            threat_positions.append(_mean_bar_center_x(red_bars))
+            continue
+        x, _, width, _ = player_bar
+        player_positions.append(float(x + width / 2))
+        threat_positions.append(_mean_bar_center_x(_enemy_bars_near_player(red_bars, player_bar)))
+    return player_positions, threat_positions
+
+
+def _mean_bar_center_x(bars: Sequence[tuple[int, int, int, int]]) -> float | None:
+    if not bars:
+        return None
+    centers = [x + width / 2 for x, _, width, _ in bars]
+    return float(np.mean(centers))
+
+
 def _preserve_overlapping_dialog(
     clip_start: float,
     clip_end: float,

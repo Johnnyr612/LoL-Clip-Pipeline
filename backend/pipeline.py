@@ -13,7 +13,15 @@ from . import config, models
 from .caption_gen import CaptionGenerator
 from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
-from .fight_detector import FightDetector, add_output_context, apply_dialog_extension, boundaries_from_scores, estimate_visible_enemy_count, finish_on_kill_or_death
+from .fight_detector import (
+    FightDetector,
+    add_output_context,
+    apply_dialog_extension,
+    boundaries_from_scores,
+    estimate_combat_screen_x_positions,
+    estimate_visible_enemy_count,
+    finish_on_kill_or_death,
+)
 from .frame_io import FrameDecodeError, decode_video
 from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
 from .models import update_job_progress
@@ -220,6 +228,7 @@ class ClipPipeline:
                 "Computing adaptive crop trajectory...",
             )
             player_map_positions = _upsample_positions(player_positions, bundle.timestamps_mini, bundle.timestamps_full)
+            player_screen_x_positions, threat_screen_x_positions = estimate_combat_screen_x_positions(bundle.full_frames)
             enemies = _normalize_enemy_positions(participants.enemies)
             keyframes = self.cropper.compute_keyframes(
                 bundle.full_frames,
@@ -229,6 +238,8 @@ class ClipPipeline:
                 player_map_positions,
                 enemies,
                 participants.fight_type,
+                player_screen_x_positions,
+                threat_screen_x_positions,
             )
             clip_mask = (bundle.timestamps_full >= trim.clip_start) & (bundle.timestamps_full <= trim.clip_end)
             clip_timestamps = bundle.timestamps_full[clip_mask]

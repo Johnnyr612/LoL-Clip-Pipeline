@@ -11,6 +11,7 @@ from backend.fight_detector import (
     apply_dialog_extension,
     boundaries_from_scores,
     estimate_visible_enemy_count,
+    estimate_combat_screen_x_positions,
     finish_on_kill_or_death,
     merge_highlights,
 )
@@ -111,3 +112,14 @@ def test_estimate_visible_enemy_count():
         cv2.rectangle(frames[idx], (900, 300), (1000, 307), (210, 30, 30), thickness=-1)
 
     assert estimate_visible_enemy_count(frames, timestamps, 0, 3) == 2
+
+
+def test_estimate_combat_screen_x_positions():
+    frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
+    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+    cv2.rectangle(frames[0], (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0]
+    assert threat_positions == [1050.0]
