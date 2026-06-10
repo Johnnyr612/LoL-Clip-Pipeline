@@ -206,7 +206,7 @@ class ClipPipeline:
                 participants = _cap_participants_to_visible_enemy_count(participants, visible_enemy_count)
             vision_result = classify_fight_participants(bundle.full_frames, bundle.timestamps_full, trim.clip_start, trim.clip_end)
             if vision_result is not None:
-                flags.append("vision_champion_classifier")
+                flags.append("local_yolo_champion_classifier")
                 participants = _apply_vision_participants(participants, vision_result, trusted_player_champion, player_champion_score)
             flags.extend(participants.flags)
             await update_job_progress(

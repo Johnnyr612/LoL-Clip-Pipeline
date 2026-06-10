@@ -83,6 +83,11 @@ CAPTION_MODEL = os.environ.get("LOL_CLIP_CAPTION_MODEL", "gpt-4o-mini")
 VISION_CLASSIFIER_MODEL = os.environ.get("LOL_CLIP_VISION_MODEL", "gpt-4o-mini")
 VISION_CLASSIFIER_TIMEOUT_SEC = 45
 VISION_CLASSIFIER_MIN_CONFIDENCE = 0.60
+_YOLO_WEIGHTS = os.environ.get("LOL_CLIP_YOLO_WEIGHTS", "").strip()
+YOLO_DETECTOR_WEIGHTS = Path(_YOLO_WEIGHTS).expanduser() if _YOLO_WEIGHTS else None
+YOLO_DETECTOR_CONFIDENCE = float(os.environ.get("LOL_CLIP_YOLO_CONFIDENCE", "0.35"))
+YOLO_DETECTOR_DEVICE = os.environ.get("LOL_CLIP_YOLO_DEVICE", "").strip() or None
+YOLO_DETECTOR_MAX_FRAMES = int(os.environ.get("LOL_CLIP_YOLO_MAX_FRAMES", "5"))
 
 _APPDATA_BASE = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
 APPDATA_DIR = _APPDATA_BASE / "LoLClipApp"

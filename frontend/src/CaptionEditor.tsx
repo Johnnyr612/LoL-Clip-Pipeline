@@ -5,6 +5,7 @@ export function CaptionEditor({ job }: { job: JobRecord | null }) {
   const captions = safeJson<Record<string, CaptionPayload>>(job?.captions, {});
   const active = captions.default;
   const [text, setText] = React.useState("");
+  const outputUrl = outputUrlFromPath(job?.output_path);
 
   React.useEffect(() => {
     setText(active?.caption ?? "");
@@ -14,7 +15,28 @@ export function CaptionEditor({ job }: { job: JobRecord | null }) {
 
   return (
     <section className="border border-lane bg-white p-4">
-      <h2 className="text-base font-semibold">Description</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-base font-semibold">Output</h2>
+        {outputUrl ? (
+          <div className="flex shrink-0 gap-2 text-sm">
+            <a className="border border-lane px-3 py-1.5 font-semibold text-slate-700" href={outputUrl} target="_blank" rel="noreferrer">
+              Open
+            </a>
+            <a className="bg-accent px-3 py-1.5 font-semibold text-white" href={outputUrl} download>
+              Download
+            </a>
+          </div>
+        ) : null}
+      </div>
+      {outputUrl ? (
+        <video className="mt-4 aspect-[3/4] max-h-[640px] w-full bg-black object-contain" src={outputUrl} controls playsInline />
+      ) : (
+        <div className="mt-4 flex aspect-[3/4] max-h-[640px] w-full items-center justify-center border border-lane bg-slate-50 text-sm text-slate-500">
+          No completed clip selected
+        </div>
+      )}
+
+      <h2 className="mt-5 text-base font-semibold">Description</h2>
       <textarea
         className="mt-4 min-h-40 w-full resize-y border border-lane p-3 text-sm outline-none focus:border-accent"
         value={text}
@@ -41,4 +63,10 @@ function safeJson<T>(value: string | undefined | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function outputUrlFromPath(value: string | undefined | null) {
+  if (!value) return "";
+  const filename = value.split(/[\\/]/).pop();
+  return filename ? `/outputs/${encodeURIComponent(filename)}` : "";
 }

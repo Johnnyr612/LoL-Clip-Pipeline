@@ -4,6 +4,7 @@ uvicorn[standard]==0.29.0
 # pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121
 transformers==4.41.0
 faster-whisper>=1.2.1
+ultralytics>=8.3.0
 numpy<2
 opencv-python==4.9.0.80
 Pillow==10.3.0

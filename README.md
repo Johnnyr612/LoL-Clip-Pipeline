@@ -7,7 +7,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Accepts an existing `.mp4` clip path through the dashboard or API.
 - Extracts full-frame and minimap frames with OpenCV.
 - Detects likely fight timing with a fine-tuned VideoMAE checkpoint, falling back to a heuristic score when the checkpoint is missing or inference fails.
-- Detects player/enemy context from minimap icons, HUD portraits, health bars, and optional vision-model classification.
+- Detects player/enemy context from minimap icons, HUD portraits, health bars, and optional local YOLO classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
 - Generates a social-ready description from detected fight context.
@@ -34,12 +34,6 @@ By default the app uses `gpt-4o-mini` for descriptions. You can override that wi
 $env:LOL_CLIP_CAPTION_MODEL = "gpt-4o-mini"
 ```
 
-The same `OPENAI_API_KEY` also enables the optional OpenAI vision fallback for participant classification. The vision model can be overridden separately:
-
-```powershell
-$env:LOL_CLIP_VISION_MODEL = "gpt-4o-mini"
-```
-
 When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns invalid JSON, the app uses a deterministic fallback description from `backend/caption_gen.py`. The fallback builds a payload from the detected player champion, enemy champions, fight type, and minimap context. It returns:
 
 - `caption`: a short hook plus body text.
@@ -47,6 +41,23 @@ When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns
 - `hook_line`: the first-line hook, for example a duel hook when one enemy is known.
 
 Fallback flags are stored as `caption_api_key_missing` or `caption_fallback`.
+
+## Local YOLO Participant Classification
+
+Participant classification can use a local YOLO model instead of the OpenAI vision API. Point the app at your weights before starting the backend:
+
+```powershell
+$env:LOL_CLIP_YOLO_WEIGHTS = "D:\path\to\your\weights.pt"
+```
+
+Optional tuning:
+
+```powershell
+$env:LOL_CLIP_YOLO_CONFIDENCE = "0.35"
+$env:LOL_CLIP_YOLO_DEVICE = "0"
+```
+
+The YOLO classifier is optional. If weights are not configured, the app falls back to minimap, HUD, and health-bar detection.
 
 ## Future Social Integration
 
@@ -121,7 +132,7 @@ The existing minimap GAN can stay as an experiment for augmentation, but the pra
 - Optional: CUDA-enabled PyTorch for faster VideoMAE/GAN training
 - `OPENAI_API_KEY` for generated descriptions.
 - Optional: `LOL_CLIP_CAPTION_MODEL` to override the caption model.
-- Optional: `LOL_CLIP_VISION_MODEL` for vision-based participant classification.
+- Optional: `LOL_CLIP_YOLO_WEIGHTS` for local YOLO participant classification.
 
 ## Included Large Files
 

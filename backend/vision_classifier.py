@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-import base64
-import json
+import logging
+import re
 from dataclasses import dataclass
-from typing import Sequence
+from pathlib import Path
+from typing import Literal, Sequence
 
-import cv2
-import httpx
 import numpy as np
 
 from . import config
+from .fight_detector import _combat_health_bars, _enemy_bars_near_player, _select_player_health_bar
+
+logger = logging.getLogger(__name__)
+
+TeamHint = Literal["player", "ally", "enemy", "unknown"]
+
+_YOLO_MODEL = None
+_YOLO_LOAD_ERROR: str | None = None
 
 
 @dataclass(frozen=True)
@@ -20,107 +27,233 @@ class VisionFightResult:
     confidence: float
 
 
+@dataclass(frozen=True)
+class _Detection:
+    champion_name: str
+    confidence: float
+    team: TeamHint
+    box: tuple[float, float, float, float]
+
+    @property
+    def center(self) -> tuple[float, float]:
+        x1, y1, x2, y2 = self.box
+        return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+
 def classify_fight_participants(
     frames: np.ndarray,
     timestamps: np.ndarray,
     clip_start: float,
     clip_end: float,
 ) -> VisionFightResult | None:
-    if not config.OPENAI_API_KEY or len(frames) == 0 or len(timestamps) == 0:
+    if len(frames) == 0 or len(timestamps) == 0:
         return None
 
-    images = _sample_frame_images(frames, timestamps, clip_start, clip_end)
-    if not images:
+    model = _load_yolo_model()
+    if model is None:
         return None
 
-    content: list[dict] = [
-        {
-            "type": "input_text",
-            "text": (
-                "Identify League of Legends champions actively fighting in these raw gameplay frames. "
-                f"The player's summoner name is {config.PLAYER_NAME}; the player has the green health bar. "
-                "Only include enemy champions with red health bars who are fighting or about to fight the player. "
-                "Ignore unrelated champions elsewhere on the minimap, HUD portraits, side portraits, kill feed, and chat. "
-                "Return JSON only with keys: player_champion, enemy_champions, fight_type, confidence. "
-                "Use exact champion names. If unsure about a champion, omit it instead of guessing."
-            ),
-        }
-    ]
-    for image in images:
-        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{image}"})
-
-    payload = {
-        "model": config.VISION_CLASSIFIER_MODEL,
-        "input": [{"role": "user", "content": content}],
-        "text": {"format": {"type": "json_object"}},
-    }
-    try:
-        with httpx.Client(timeout=config.VISION_CLASSIFIER_TIMEOUT_SEC) as client:
-            response = client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            response.raise_for_status()
-        parsed = _parse_response_json(response.json())
-    except Exception:
+    sampled = _sample_frames(frames, timestamps, clip_start, clip_end)
+    if not sampled:
         return None
 
-    player = _clean_name(parsed.get("player_champion"))
-    enemies = [_clean_name(name) for name in parsed.get("enemy_champions", []) if _clean_name(name)]
-    confidence = _as_float(parsed.get("confidence"))
-    if not player or confidence < config.VISION_CLASSIFIER_MIN_CONFIDENCE:
-        return None
-    fight_type = parsed.get("fight_type")
-    if not isinstance(fight_type, str) or "v" not in fight_type:
-        fight_type = f"1v{max(1, len(enemies))}"
-    return VisionFightResult(player, enemies[:5], fight_type, confidence)
+    player_votes: dict[str, list[float]] = {}
+    enemy_votes: dict[str, list[float]] = {}
 
-
-def _sample_frame_images(
-    frames: np.ndarray,
-    timestamps: np.ndarray,
-    clip_start: float,
-    clip_end: float,
-) -> list[str]:
-    sample_times = np.linspace(clip_start, clip_end, min(3, max(1, len(frames))))
-    images: list[str] = []
-    used_indexes: set[int] = set()
-    for timestamp in sample_times:
-        index = int(np.argmin(np.abs(timestamps - timestamp)))
-        if index in used_indexes:
+    for frame in sampled:
+        detections = _detect_frame(model, frame)
+        if not detections:
             continue
-        used_indexes.add(index)
-        frame = frames[index]
-        resized = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
-        ok, encoded = cv2.imencode(".jpg", cv2.cvtColor(resized, cv2.COLOR_RGB2BGR), [int(cv2.IMWRITE_JPEG_QUALITY), 86])
-        if ok:
-            images.append(base64.b64encode(encoded.tobytes()).decode("ascii"))
-    return images
+
+        player = _select_player_detection(frame, detections)
+        if player is not None:
+            player_votes.setdefault(player.champion_name, []).append(player.confidence)
+
+        for enemy in _select_enemy_detections(frame, detections, player):
+            enemy_votes.setdefault(enemy.champion_name, []).append(enemy.confidence)
+
+    if not player_votes:
+        return None
+
+    player_name, player_confidence = _best_vote(player_votes)
+    enemies = [
+        name
+        for name, _confidence in sorted(
+            (_best_vote({name: scores}) for name, scores in enemy_votes.items() if name != player_name),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    ][:5]
+    confidence = min(1.0, max(player_confidence, max((max(scores) for scores in enemy_votes.values()), default=0.0)))
+    if confidence < config.VISION_CLASSIFIER_MIN_CONFIDENCE:
+        return None
+    return VisionFightResult(player_name, enemies, f"1v{max(1, len(enemies))}", confidence)
 
 
-def _parse_response_json(payload: dict) -> dict:
-    text = payload.get("output_text")
-    if isinstance(text, str):
-        return json.loads(text)
-    for item in payload.get("output", []):
-        for content in item.get("content", []):
-            if content.get("type") in {"output_text", "text"} and isinstance(content.get("text"), str):
-                return json.loads(content["text"])
-    return {}
+def _load_yolo_model():
+    global _YOLO_MODEL, _YOLO_LOAD_ERROR
+    if _YOLO_MODEL is not None:
+        return _YOLO_MODEL
+    if _YOLO_LOAD_ERROR:
+        return None
 
+    weights = config.YOLO_DETECTOR_WEIGHTS
+    if weights is None:
+        return None
+    weights = Path(weights)
+    if not weights.exists():
+        _YOLO_LOAD_ERROR = f"YOLO weights not found: {weights}"
+        logger.warning(_YOLO_LOAD_ERROR)
+        return None
 
-def _clean_name(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    name = value.strip()
-    if not name or name.lower().startswith("unknown"):
-        return ""
-    return name
-
-
-def _as_float(value: object) -> float:
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+        from ultralytics import YOLO
+
+        _YOLO_MODEL = YOLO(str(weights))
+        return _YOLO_MODEL
+    except Exception as exc:  # noqa: BLE001 - local detector is optional.
+        _YOLO_LOAD_ERROR = str(exc)
+        logger.warning("YOLO participant classifier unavailable: %s", exc)
+        return None
+
+
+def _sample_frames(frames: np.ndarray, timestamps: np.ndarray, clip_start: float, clip_end: float) -> list[np.ndarray]:
+    indexes = np.flatnonzero((timestamps >= clip_start) & (timestamps <= clip_end))
+    if len(indexes) == 0:
+        indexes = np.array([int(np.argmin(np.abs(timestamps - clip_start)))])
+    max_frames = max(1, config.YOLO_DETECTOR_MAX_FRAMES)
+    if len(indexes) > max_frames:
+        indexes = indexes[np.linspace(0, len(indexes) - 1, max_frames, dtype=int)]
+    return [frames[int(index)] for index in indexes]
+
+
+def _detect_frame(model, frame: np.ndarray) -> list[_Detection]:
+    kwargs = {"conf": config.YOLO_DETECTOR_CONFIDENCE, "verbose": False}
+    if config.YOLO_DETECTOR_DEVICE:
+        kwargs["device"] = config.YOLO_DETECTOR_DEVICE
+    try:
+        results = model.predict(frame, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - failed YOLO inference should not kill the pipeline.
+        logger.warning("YOLO participant inference failed: %s", exc)
+        return []
+
+    detections: list[_Detection] = []
+    for result in results:
+        names = getattr(result, "names", None) or getattr(model, "names", {})
+        boxes = getattr(result, "boxes", None)
+        if boxes is None:
+            continue
+        for box in boxes:
+            cls = int(_tensor_scalar(box.cls))
+            raw_name = str(names.get(cls, cls) if isinstance(names, dict) else names[cls])
+            champion_name, team = _parse_class_name(raw_name)
+            if not champion_name:
+                continue
+            confidence = float(_tensor_scalar(box.conf))
+            xyxy = _tensor_array(box.xyxy).reshape(-1)[:4]
+            if len(xyxy) != 4:
+                continue
+            detections.append(_Detection(champion_name, confidence, team, tuple(float(v) for v in xyxy)))
+    return detections
+
+
+def _select_player_detection(frame: np.ndarray, detections: Sequence[_Detection]) -> _Detection | None:
+    explicit = [item for item in detections if item.team == "player"]
+    if explicit:
+        return max(explicit, key=lambda item: item.confidence)
+    allies = [item for item in detections if item.team == "ally"]
+    if allies:
+        return max(allies, key=lambda item: item.confidence)
+
+    _red_bars, green_bars = _combat_health_bars(frame)
+    player_bar = _select_player_health_bar(green_bars)
+    if player_bar is None:
+        return max(detections, key=lambda item: item.confidence, default=None)
+    target = _box_center(player_bar)
+    return min(detections, key=lambda item: _distance(item.center, target), default=None)
+
+
+def _select_enemy_detections(frame: np.ndarray, detections: Sequence[_Detection], player: _Detection | None) -> list[_Detection]:
+    explicit = [item for item in detections if item.team == "enemy" and item is not player]
+    if explicit:
+        return _dedupe_by_champion(explicit)
+
+    red_bars, green_bars = _combat_health_bars(frame)
+    player_bar = _select_player_health_bar(green_bars)
+    enemy_bars = _enemy_bars_near_player(red_bars, player_bar)
+    if enemy_bars:
+        enemy_centers = [_box_center(box) for box in enemy_bars]
+        nearby = [
+            item
+            for item in detections
+            if item is not player and min(_distance(item.center, center) for center in enemy_centers) <= 260
+        ]
+        if nearby:
+            return _dedupe_by_champion(nearby)
+
+    return _dedupe_by_champion([item for item in detections if item is not player])
+
+
+def _dedupe_by_champion(detections: Sequence[_Detection]) -> list[_Detection]:
+    best: dict[str, _Detection] = {}
+    for detection in detections:
+        current = best.get(detection.champion_name)
+        if current is None or detection.confidence > current.confidence:
+            best[detection.champion_name] = detection
+    return list(best.values())
+
+
+def _parse_class_name(raw_name: str) -> tuple[str, TeamHint]:
+    normalized = raw_name.strip()
+    if not normalized:
+        return "", "unknown"
+
+    team: TeamHint = "unknown"
+    lowered = normalized.lower().replace("-", "_").replace(" ", "_")
+    if re.match(r"^(player|self|me)(_|:)", lowered):
+        team = "player"
+    elif re.match(r"^(ally|blue|green)(_|:)", lowered):
+        team = "ally"
+    elif re.match(r"^(enemy|red)(_|:)", lowered):
+        team = "enemy"
+
+    name = re.sub(r"^(player|self|me|ally|blue|green|enemy|red)[_:\-\s]+", "", normalized, flags=re.IGNORECASE)
+    name = name.replace("_", " ").strip()
+    if name.lower() in {"player", "ally", "enemy", "champion", "unknown"}:
+        return "", team
+    return name, team
+
+
+def _best_vote(votes: dict[str, list[float]]) -> tuple[str, float]:
+    name, scores = max(votes.items(), key=lambda item: (len(item[1]), float(np.mean(item[1]))))
+    return name, float(np.mean(scores))
+
+
+def _box_center(box: tuple[int, int, int, int]) -> tuple[float, float]:
+    x, y, width, height = box
+    return (float(x + (width - 1) / 2), float(y + (height - 1) / 2))
+
+
+def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return float(np.linalg.norm(np.array(a, dtype=np.float32) - np.array(b, dtype=np.float32)))
+
+
+def _tensor_scalar(value: object) -> float:
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    array = np.asarray(value).reshape(-1)
+    return float(array[0]) if len(array) else 0.0
+
+
+def _tensor_array(value: object) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    return np.asarray(value, dtype=np.float32)

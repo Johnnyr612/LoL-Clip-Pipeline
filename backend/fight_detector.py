@@ -230,7 +230,7 @@ def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[fl
             threat_positions.append(_mean_bar_center_x(red_bars))
             continue
         x, _, width, _ = player_bar
-        player_positions.append(float(x + width / 2))
+        player_positions.append(float(x + (width - 1) / 2))
         threat_positions.append(_mean_bar_center_x(_enemy_bars_near_player(red_bars, player_bar)))
     return player_positions, threat_positions
 
@@ -238,7 +238,7 @@ def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[fl
 def _mean_bar_center_x(bars: Sequence[tuple[int, int, int, int]]) -> float | None:
     if not bars:
         return None
-    centers = [x + width / 2 for x, _, width, _ in bars]
+    centers = [x + (width - 1) / 2 for x, _, width, _ in bars]
     return float(np.mean(centers))
 
 
@@ -375,8 +375,52 @@ class FightDetector:
     def __init__(self) -> None:
         self.videomae_loaded = False
         self.whisper_loaded = False
+        self._videomae_model = None
+        self._videomae_device = None
+        self._videomae_load_error: str | None = None
+        self._whisper_model = None
+        self._whisper_load_error: str | None = None
         if not config.VIDEOMAE_CHECKPOINT.exists():
             logger.warning("VideoMAE checkpoint missing; pretrained/fallback scoring will be used")
+
+    def _load_videomae(self):
+        if self._videomae_model is not None and self._videomae_device is not None:
+            return self._videomae_model, self._videomae_device
+        if self._videomae_load_error:
+            raise RuntimeError(self._videomae_load_error)
+
+        try:
+            import torch
+            import torch.nn as nn
+            from transformers import VideoMAEModel
+
+            checkpoint = Path(str(config.VIDEOMAE_CHECKPOINT))
+            if not checkpoint.exists():
+                raise FileNotFoundError(f"VideoMAE checkpoint not found at {checkpoint}")
+
+            device = torch.device(CUDA_DEVICE_TYPE if torch.cuda.is_available() else "cpu")
+
+            class _Classifier(nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.videomae = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
+                    self.classifier = nn.Linear(768, 2)
+
+                def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+                    out = self.videomae(pixel_values=pixel_values)
+                    pooled = out.last_hidden_state.mean(dim=1)
+                    return self.classifier(pooled)
+
+            model = _Classifier().to(device)
+            model.load_state_dict(torch.load(str(checkpoint), map_location=device))
+            model.eval()
+            self._videomae_model = model
+            self._videomae_device = device
+            self.videomae_loaded = True
+            return model, device
+        except Exception as exc:  # noqa: BLE001 - inference can fall back to heuristics.
+            self._videomae_load_error = str(exc)
+            raise
 
     def score_windows(
         self,
@@ -391,42 +435,10 @@ class FightDetector:
         if len(full_frames) == 0:
             return []
 
-        checkpoint = Path(str(config.VIDEOMAE_CHECKPOINT))
-        if not checkpoint.exists():
-            logger.warning(
-                "VideoMAE checkpoint not found at %s - heuristic fallback",
-                checkpoint,
-            )
-            return self._heuristic_scores(full_frames, timestamps)
-
         try:
             import torch
-            import torch.nn as nn
             import torchvision.transforms.functional as TF
-            from transformers import VideoMAEModel
-
-            device = torch.device(
-                CUDA_DEVICE_TYPE if torch.cuda.is_available() else "cpu"
-            )
-
-            class _Classifier(nn.Module):
-                def __init__(self) -> None:
-                    super().__init__()
-                    self.videomae = VideoMAEModel.from_pretrained(
-                        "MCG-NJU/videomae-base"
-                    )
-                    self.classifier = nn.Linear(768, 2)
-
-                def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-                    out = self.videomae(pixel_values=pixel_values)
-                    pooled = out.last_hidden_state.mean(dim=1)
-                    return self.classifier(pooled)
-
-            model = _Classifier().to(device)
-            model.load_state_dict(
-                torch.load(str(checkpoint), map_location=device)
-            )
-            model.eval()
+            model, device = self._load_videomae()
 
             mean = [0.485, 0.456, 0.406]
             std = [0.229, 0.224, 0.225]
@@ -495,9 +507,14 @@ class FightDetector:
         if audio_path is None or not audio_path.exists():
             return []
         try:
-            from faster_whisper import WhisperModel
+            if self._whisper_load_error:
+                raise RuntimeError(self._whisper_load_error)
+            if self._whisper_model is None:
+                from faster_whisper import WhisperModel
 
-            model = WhisperModel("base", device="cpu", compute_type="int8")
+                self._whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+                self.whisper_loaded = True
+            model = self._whisper_model
             segments, _info = model.transcribe(str(audio_path))
             return [
                 DialogSegment(text=seg.text.strip(), start=float(seg.start), end=float(seg.end))
@@ -505,6 +522,7 @@ class FightDetector:
                 if seg.text.strip()
             ]
         except Exception as exc:  # noqa: BLE001 - Whisper absence should not kill the pipeline.
+            self._whisper_load_error = str(exc)
             logger.warning("Whisper transcription unavailable: %s", exc)
             return []
 
