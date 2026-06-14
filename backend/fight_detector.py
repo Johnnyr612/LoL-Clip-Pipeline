@@ -50,8 +50,10 @@ def boundaries_from_scores(scores: Sequence[float], source_duration: float) -> t
     flags: list[str] = []
     if not scores or max(scores) < config.FIGHT_CONFIDENCE_THRESHOLD:
         center = source_duration / 2
-        start = max(0.0, center - 5.0)
-        end = min(source_duration, center + 5.0)
+        fallback_duration = config.COMBAT_EVENT_TARGET_CLIP_DURATION_SEC if config.CONSERVATIVE_FULL_FIGHT_TRIM else 10.0
+        start = max(0.0, center - fallback_duration / 2)
+        end = min(source_duration, start + fallback_duration)
+        start = max(0.0, end - fallback_duration)
         return start, end, ["low_confidence"]
 
     peak_idx = int(np.argmax(np.array(scores)))
@@ -151,10 +153,13 @@ def finish_on_kill_or_death(
         )
 
     clip_end = min(max_clip_end, event_time + config.COMBAT_EVENT_END_PADDING_SEC)
+    flags = [*trim.flags, event_flag, "clip_end_on_kill_or_death"]
+    if config.CONSERVATIVE_FULL_FIGHT_TRIM:
+        clip_end = max(clip_end, target_clip_end, trim.clip_end)
+        flags.append("conservative_full_fight_trim")
     clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
     clip_end = min(max(clip_end, min_clip_end), max_clip_end)
     fight_end = max(trim.fight_end, event_time)
-    flags = [*trim.flags, event_flag, "clip_end_on_kill_or_death"]
     return TrimResult(
         clip_start=trim.clip_start,
         clip_end=round(clip_end, 3),
@@ -231,8 +236,55 @@ def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[fl
             continue
         x, _, width, _ = player_bar
         player_positions.append(float(x + (width - 1) / 2))
-        threat_positions.append(_mean_bar_center_x(_enemy_bars_near_player(red_bars, player_bar)))
+        threat_positions.append(_nearest_bar_center_x(_enemy_bars_near_player(red_bars, player_bar), player_bar))
     return player_positions, threat_positions
+
+
+def _nearest_bar_center_x(
+    bars: Sequence[tuple[int, int, int, int]],
+    player_bar: tuple[int, int, int, int],
+) -> float | None:
+    if not bars:
+        return None
+    px, py = _bar_center(player_bar)
+    nearest = min(bars, key=lambda bar: float(np.linalg.norm(np.array(_bar_center(bar)) - np.array((px, py)))))
+    return float(_bar_center(nearest)[0])
+
+
+def _combine_scores(primary_scores: Sequence[float], healthbar_scores: Sequence[float]) -> list[float]:
+    length = max(len(primary_scores), len(healthbar_scores))
+    combined: list[float] = []
+    for idx in range(length):
+        primary = float(primary_scores[idx]) if idx < len(primary_scores) else 0.0
+        healthbar = float(healthbar_scores[idx]) if idx < len(healthbar_scores) else 0.0
+        combined.append(max(primary, healthbar))
+    return combined
+
+
+def _healthbar_engagement_scores(full_frames: np.ndarray, timestamps: np.ndarray) -> list[float]:
+    if len(full_frames) == 0:
+        return []
+    max_second = int(float(timestamps[-1])) if len(timestamps) else max(0, len(full_frames) - 1)
+    scores: list[float] = []
+    for second in range(max(0, max_second - 15)):
+        frame_indices = np.where((timestamps >= second) & (timestamps < second + 16))[0]
+        if len(frame_indices) == 0:
+            scores.append(0.0)
+            continue
+        if len(frame_indices) > 12:
+            frame_indices = frame_indices[np.linspace(0, len(frame_indices) - 1, 12, dtype=int)]
+        engaged_scores: list[float] = []
+        for index in frame_indices:
+            red_bars, green_bars = _combat_health_bars(full_frames[int(index)])
+            player_bar = _select_player_health_bar(green_bars)
+            nearby_enemies = _enemy_bars_near_player(red_bars, player_bar)
+            if player_bar is None or not nearby_enemies:
+                engaged_scores.append(0.0)
+                continue
+            enemy_count_bonus = min(len(nearby_enemies), 3) * 0.05
+            engaged_scores.append(min(0.95, 0.72 + enemy_count_bonus))
+        scores.append(float(np.median(engaged_scores)) if engaged_scores else 0.0)
+    return scores
 
 
 def _mean_bar_center_x(bars: Sequence[tuple[int, int, int, int]]) -> float | None:
@@ -240,6 +292,11 @@ def _mean_bar_center_x(bars: Sequence[tuple[int, int, int, int]]) -> float | Non
         return None
     centers = [x + (width - 1) / 2 for x, _, width, _ in bars]
     return float(np.mean(centers))
+
+
+def _bar_center(bar: tuple[int, int, int, int]) -> tuple[float, float]:
+    x, y, width, height = bar
+    return (float(x + (width - 1) / 2), float(y + (height - 1) / 2))
 
 
 def _preserve_overlapping_dialog(
@@ -318,10 +375,9 @@ def _combat_health_bars(frame: np.ndarray) -> tuple[list[tuple[int, int, int, in
     roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
     red_mask = _mask_color(roi, "red")
     green_mask = _mask_color(roi, "green")
-    return (
-        _health_bar_boxes(red_mask, roi_x1, roi_y1),
-        _health_bar_boxes(green_mask, roi_x1, roi_y1),
-    )
+    red_bars = _filter_side_hud_bars(_health_bar_boxes(red_mask, roi_x1, roi_y1), w, h)
+    green_bars = _filter_side_hud_bars(_health_bar_boxes(green_mask, roi_x1, roi_y1), w, h)
+    return red_bars, green_bars
 
 
 def _mask_color(roi: np.ndarray, color: str) -> np.ndarray:
@@ -346,6 +402,16 @@ def _health_bar_boxes(mask: np.ndarray, offset_x: int, offset_y: int) -> list[tu
             continue
         boxes.append((x + offset_x, y + offset_y, w, h))
     return boxes
+
+
+def _filter_side_hud_bars(
+    boxes: list[tuple[int, int, int, int]],
+    frame_w: int,
+    frame_h: int,
+) -> list[tuple[int, int, int, int]]:
+    max_x = frame_w * config.COMBAT_HEALTHBAR_IGNORE_LEFT_X_PCT
+    max_y = frame_h * config.COMBAT_HEALTHBAR_IGNORE_LEFT_Y_MAX_PCT
+    return [box for box in boxes if not (box[0] < max_x and box[1] < max_y)]
 
 
 def _select_player_health_bar(green_bars: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int] | None:
@@ -476,14 +542,15 @@ class FightDetector:
                     prob = float(torch.softmax(logits, dim=-1)[0, 1].cpu())
                     scores.append(prob)
 
-            return scores
+            return _combine_scores(scores, _healthbar_engagement_scores(full_frames, timestamps))
 
         except Exception as exc:
             logger.warning(
                 "VideoMAE inference failed (%s) - heuristic fallback",
                 exc,
             )
-            return self._heuristic_scores(full_frames, timestamps)
+            heuristic_scores = self._heuristic_scores(full_frames, timestamps)
+            return _combine_scores(heuristic_scores, _healthbar_engagement_scores(full_frames, timestamps))
 
     def _heuristic_scores(
         self,

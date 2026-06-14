@@ -55,7 +55,7 @@ def _escape_filter_expr(expr: str) -> str:
     return expr.replace(",", r"\,")
 
 
-def _linear_crop_expression(
+def _step_crop_expression(
     crops: Sequence[tuple[int, int, int, int]],
     timestamps: Sequence[float],
     clip_start: float,
@@ -84,14 +84,9 @@ def _linear_crop_expression(
 
     expr = _ffmpeg_expr(points[-1][1])
     for idx in range(len(points) - 2, -1, -1):
-        t0, x0 = points[idx]
-        t1, x1 = points[idx + 1]
-        if math.isclose(t1, t0, abs_tol=1e-6):
-            segment_expr = _ffmpeg_expr(x1)
-        else:
-            slope = (x1 - x0) / (t1 - t0)
-            segment_expr = f"{_ffmpeg_expr(x0)}+({_ffmpeg_expr(slope)})*(t-{_ffmpeg_expr(t0)})"
-        expr = f"if(lte(t,{_ffmpeg_expr(t1)}),{segment_expr},{expr})"
+        t1, _next_x = points[idx + 1]
+        _t0, x0 = points[idx]
+        expr = f"if(lt(t,{_ffmpeg_expr(t1)}),{_ffmpeg_expr(x0)},{expr})"
     return _escape_filter_expr(expr)
 
 
@@ -116,7 +111,7 @@ class VideoEncoder:
 
         try:
             clip_duration = max(0.0, clip_end - clip_start)
-            crop_x = _linear_crop_expression(crops, crop_timestamps, clip_start, clip_end)
+            crop_x = _step_crop_expression(crops, crop_timestamps, clip_start, clip_end)
             vf = f"crop={config.CROP_W}:{config.CROP_H}:x={crop_x}:y=0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"
             _run_ffmpeg(
                 [
@@ -138,10 +133,18 @@ class VideoEncoder:
                     str(config.FFMPEG_CRF),
                     "-preset",
                     config.FFMPEG_PRESET,
+                    "-g",
+                    str(config.OUTPUT_FPS),
+                    "-keyint_min",
+                    str(config.OUTPUT_FPS),
+                    "-sc_threshold",
+                    "0",
                     "-c:a",
                     "aac",
                     "-b:a",
                     "192k",
+                    "-movflags",
+                    "+faststart",
                     str(final_output),
                 ]
             )

@@ -3,9 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-import cv2
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
 
 from . import config
 from .minimap_detector import ChampionResult, map_pos_to_screen_hint
@@ -49,6 +47,30 @@ def enforce_center_preference(crop_x: float, player_sx: float) -> float:
     return crop_x
 
 
+def include_threat_in_crop(crop_x: float, player_sx: float, threat_sx: float | None) -> float:
+    if threat_sx is None:
+        return crop_x
+    threat_x_in_crop = threat_sx - crop_x
+    if threat_x_in_crop < config.THREAT_FRAME_MARGIN_PX:
+        crop_x = threat_sx - config.THREAT_FRAME_MARGIN_PX
+    elif threat_x_in_crop > config.CROP_W - config.THREAT_FRAME_MARGIN_PX:
+        crop_x = threat_sx - (config.CROP_W - config.THREAT_FRAME_MARGIN_PX)
+    return enforce_player_framing(crop_x, player_sx)
+
+
+def avoid_minimap_ui(crop_x: float, player_sx: float, frame_w: int = 1920) -> float:
+    minimap_left = frame_w * config.MINIMAP_CROP_X_PCT
+    max_without_minimap = minimap_left - config.CROP_W - config.MINIMAP_UI_AVOID_MARGIN_PX
+    if crop_x <= max_without_minimap:
+        return crop_x
+
+    capped = max(0.0, max_without_minimap)
+    player_x_in_capped_crop = player_sx - capped
+    if config.PLAYER_SAFE_LEFT_PX <= player_x_in_capped_crop <= config.PLAYER_SAFE_RIGHT_PX:
+        return capped
+    return crop_x
+
+
 def clamp_crop_x(crop_x: float, frame_w: int = 1920) -> int:
     return int(np.clip(round(crop_x), 0, frame_w - config.CROP_W))
 
@@ -72,41 +94,21 @@ def compute_threat_sx(
     return weighted / total if total else map_pos_to_screen_hint(player_map_pos, frame_size)[0]
 
 
-def optical_flow_centroid(prev_frame: np.ndarray | None, frame: np.ndarray, player_sx: float) -> float:
-    if prev_frame is None:
-        return player_sx
-    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_RGB2GRAY)
-    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-    flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-    magnitude = np.sqrt(flow[:, :, 0] ** 2 + flow[:, :, 1] ** 2)
-    if float(magnitude.sum()) < config.LOW_FLOW_THRESHOLD:
-        return player_sx
-    threshold = np.percentile(magnitude, 85)
-    mask = magnitude >= threshold
-    if not np.any(mask):
-        return player_sx
-    xs = np.nonzero(mask)[1]
-    weights = magnitude[mask]
-    return float(np.average(xs, weights=weights))
-
-
-def smooth_crop_values(values: Sequence[float], player_sx_values: Sequence[float], frame_w: int = 1920) -> np.ndarray:
+def smooth_crop_values(
+    values: Sequence[float],
+    player_sx_values: Sequence[float],
+    frame_w: int = 1920,
+    threat_sx_values: Sequence[float | None] | None = None,
+) -> np.ndarray:
     x = np.asarray(values, dtype=np.float32)
     if len(x) == 0:
         return x
-    x = gaussian_filter1d(x, sigma=config.GAUSSIAN_SIGMA, mode="nearest")
     for idx, player_sx in enumerate(player_sx_values):
         x[idx] = enforce_player_framing(float(x[idx]), float(player_sx))
+        if threat_sx_values is not None:
+            x[idx] = include_threat_in_crop(float(x[idx]), float(player_sx), threat_sx_values[idx])
+        x[idx] = avoid_minimap_ui(float(x[idx]), float(player_sx), frame_w)
         x[idx] = clamp_crop_x(float(x[idx]), frame_w)
-    for idx in range(len(x) - 1):
-        delta = x[idx + 1] - x[idx]
-        if abs(delta) < config.CROP_MOTION_DEADBAND_PX:
-            x[idx + 1] = x[idx]
-            delta = 0
-        if abs(delta) > config.MAX_PAN_SPEED_PX:
-            x[idx + 1] = x[idx] + np.sign(delta) * config.MAX_PAN_SPEED_PX
-        x[idx + 1] = enforce_player_framing(float(x[idx + 1]), float(player_sx_values[idx + 1]))
-        x[idx + 1] = clamp_crop_x(float(x[idx + 1]), frame_w)
     return x
 
 
@@ -129,14 +131,13 @@ class AdaptiveCropper:
         threat_screen_x_positions: Sequence[float | None] | None = None,
     ) -> list[CropKeyframe]:
         frame_h, frame_w = frames.shape[1:3]
-        key_times = np.arange(clip_start, clip_end + 1e-6, config.KEYFRAME_INTERVAL_SEC)
+        key_times = _trajectory_times(clip_start, clip_end)
         raw_x: list[float] = []
         player_sx_values: list[float] = []
-        previous_frame: np.ndarray | None = None
+        threat_sx_values: list[float | None] = []
         previous_player_pos = (0.5, 0.5)
         for timestamp in key_times:
             frame_idx = int(np.argmin(np.abs(timestamps - timestamp)))
-            frame = frames[frame_idx]
             player_pos = player_positions[min(frame_idx, len(player_positions) - 1)] if player_positions else None
             if player_pos is None:
                 player_pos = previous_player_pos
@@ -146,20 +147,24 @@ class AdaptiveCropper:
                 if player_screen_x_positions
                 else None
             )
-            player_sx = float(detected_player_sx) if detected_player_sx is not None else map_pos_to_screen_hint(player_pos, (frame_w, frame_h))[0]
+            # The minimap white box is the camera viewport already being recorded.
+            # If no in-world green health bar is visible, center the crop in that recorded view.
+            player_sx = float(detected_player_sx) if detected_player_sx is not None else frame_w / 2
             detected_threat_sx = (
                 threat_screen_x_positions[min(frame_idx, len(threat_screen_x_positions) - 1)]
                 if threat_screen_x_positions
                 else None
             )
-            threat_sx = float(detected_threat_sx) if detected_threat_sx is not None else compute_threat_sx(player_pos, enemies, (frame_w, frame_h))
-            flow_sx = optical_flow_centroid(previous_frame, frame, player_sx)
-            target = blend_target(fight_type, player_sx, threat_sx, flow_sx)
+            threat_sx = float(detected_threat_sx) if detected_threat_sx is not None else None
+            blend_threat_sx = threat_sx if threat_sx is not None else player_sx
+            target = blend_target(fight_type, player_sx, blend_threat_sx, player_sx)
             crop_x = enforce_player_framing(target - config.CROP_W / 2, player_sx)
+            crop_x = include_threat_in_crop(crop_x, player_sx, threat_sx)
+            crop_x = avoid_minimap_ui(crop_x, player_sx, frame_w)
             raw_x.append(clamp_crop_x(crop_x, frame_w))
             player_sx_values.append(player_sx)
-            previous_frame = frame
-        smoothed = smooth_crop_values(raw_x, player_sx_values, frame_w)
+            threat_sx_values.append(threat_sx)
+        smoothed = smooth_crop_values(raw_x, player_sx_values, frame_w, threat_sx_values)
         return [CropKeyframe(float(t), int(x)) for t, x in zip(key_times, smoothed)]
 
     def interpolate_to_frames(self, keyframes: Sequence[CropKeyframe], source_timestamps: np.ndarray) -> list[tuple[int, int, int, int]]:
@@ -167,5 +172,15 @@ class AdaptiveCropper:
             return []
         key_times = np.array([k.timestamp for k in keyframes], dtype=np.float32)
         key_x = np.array([k.crop_x for k in keyframes], dtype=np.float32)
-        x_values = np.interp(source_timestamps, key_times, key_x)
+        indexes = np.searchsorted(key_times, source_timestamps, side="right") - 1
+        indexes = np.clip(indexes, 0, len(key_x) - 1)
+        x_values = key_x[indexes]
         return [(int(round(x)), config.CROP_Y, config.CROP_W, config.CROP_H) for x in x_values]
+
+
+def _trajectory_times(clip_start: float, clip_end: float) -> np.ndarray:
+    duration = max(0.0, clip_end - clip_start)
+    if duration <= 1e-6:
+        return np.array([clip_start], dtype=np.float32)
+    count = min(config.MAX_CROP_KEYFRAMES, max(1, int(np.ceil(duration / max(config.KEYFRAME_INTERVAL_SEC, 1e-6))) + 1))
+    return np.linspace(clip_start, clip_end, count, dtype=np.float32)

@@ -13,7 +13,8 @@ def test_caption_prompt_includes_original_minimap_context():
         "",
     )
 
-    assert "Champions actively fighting or collapsing on the fight from original minimap/HUD: Aatrox, Ahri, Thresh" in prompt
+    assert "Detected champion matchup to build the description around: Aatrox into Ahri" in prompt
+    assert "All detected champions actively fighting or collapsing from minimap/HUD: Aatrox, Ahri, Thresh" in prompt
     assert "Enemies fought: Ahri" in prompt
 
 
@@ -31,4 +32,5 @@ def test_fallback_caption_uses_minimap_context_when_enemies_unknown(monkeypatch)
     )
 
     assert "Swain took the Jax duel" in result.captions["default"]["caption"]
+    assert "Swain into Jax" in result.captions["default"]["caption"]
     assert "caption_api_key_missing" in result.flags

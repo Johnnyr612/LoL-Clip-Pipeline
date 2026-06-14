@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import cv2
 import numpy as np
@@ -53,6 +54,7 @@ class MinimapDetector:
         self.manifest_path = Path(manifest_path)
         self.name_to_key: dict[str, str] = {}
         self.key_to_name: dict[str, str] = {}
+        self._champion_name_lookup: dict[str, str] = {}
         self.templates: dict[str, np.ndarray] = {}
         self.augmented: dict[str, list[np.ndarray]] = {}
         self.base_names: list[str] = []
@@ -60,6 +62,8 @@ class MinimapDetector:
         self.augmented_matrices: dict[str, np.ndarray] = {}
         self.phash_templates: dict[str, list[np.ndarray]] = {}
         self.icon_classifier: MinimapIconClassifier | None = None
+        self._yolo_model: Any | None = None
+        self._yolo_load_error: str | None = None
         self._minimap_rect: Optional[Rect] = None
         self.minimap_boundary_estimated = False
 
@@ -71,6 +75,8 @@ class MinimapDetector:
         for item in manifest:
             self.name_to_key[item["name"]] = item["id"]
             self.key_to_name[item["id"]] = item["name"]
+            self._champion_name_lookup[_champion_lookup_key(item["name"])] = item["name"]
+            self._champion_name_lookup[_champion_lookup_key(item["id"])] = item["name"]
 
     def _load_icons(self) -> None:
         images_dir = self.icons_dir / "images"
@@ -367,44 +373,100 @@ class MinimapDetector:
         return max(matches, key=lambda item: item[1])
 
     def detect_icons(self, minimap_frame: np.ndarray) -> list[RawIconDetection]:
-        gray = cv2.cvtColor(minimap_frame, cv2.COLOR_RGB2GRAY)
-        circles = cv2.HoughCircles(
-            gray,
-            cv2.HOUGH_GRADIENT,
-            dp=1.2,
-            minDist=config.HOUGH_MIN_DIST,
-            param1=config.HOUGH_PARAM1,
-            param2=config.HOUGH_PARAM2,
-            minRadius=config.HOUGH_MIN_RADIUS,
-            maxRadius=config.HOUGH_MAX_RADIUS,
-        )
-        if circles is None:
+        return self.detect_icons_yolo(minimap_frame)
+
+    def detect_icons_yolo(self, minimap_frame: np.ndarray) -> list[RawIconDetection]:
+        model = self._load_yolo_model()
+        if model is None:
+            return []
+
+        kwargs: dict[str, object] = {
+            "conf": config.MINIMAP_YOLO_CONFIDENCE,
+            "max_det": config.MINIMAP_YOLO_MAX_DETECTIONS,
+            "verbose": False,
+        }
+        if config.MINIMAP_YOLO_DEVICE:
+            kwargs["device"] = config.MINIMAP_YOLO_DEVICE
+
+        try:
+            bgr_frame = cv2.cvtColor(minimap_frame, cv2.COLOR_RGB2BGR)
+            results = model.predict(bgr_frame, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - failed YOLO inference should not kill aggregation.
+            logger.warning("YOLO minimap champion inference failed: %s", exc)
             return []
 
         detections: list[RawIconDetection] = []
-        rounded_circles = np.round(circles[0]).astype(int)
-        rounded_circles = sorted(rounded_circles, key=lambda item: int(item[2]), reverse=True)
-        for idx, circle in enumerate(rounded_circles[: config.MINIMAP_MAX_CIRCLES_PER_FRAME]):
-            x, y, radius = int(circle[0]), int(circle[1]), int(circle[2])
-            x1, y1 = max(0, x - radius), max(0, y - radius)
-            x2, y2 = min(minimap_frame.shape[1], x + radius), min(minimap_frame.shape[0], y + radius)
-            roi = minimap_frame[y1:y2, x1:x2]
-            if roi.size == 0:
+        height, width = minimap_frame.shape[:2]
+        for result in results:
+            names = getattr(result, "names", None) or getattr(model, "names", {})
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
                 continue
-            team = self.classify_team(roi)
-            interior = roi.copy()
-            if min(interior.shape[:2]) > 30:
-                margin = max(1, int(radius * 0.35))
-                interior = interior[margin:-margin, margin:-margin]
-            best, score = self.match_champion_rgb(cv2.resize(interior, (120, 120), interpolation=cv2.INTER_AREA))
-            if score >= config.TEMPLATE_MATCH_CONFIRM:
-                champion, uncertain = best, False
-            elif score >= config.TEMPLATE_MATCH_UNCERTAIN:
-                champion, uncertain = best, True
-            else:
-                champion, uncertain = f"unknown_champion_{idx}", True
-            detections.append(RawIconDetection((x, y), radius, team, champion, score, uncertain))
-        return detections
+            for box in boxes:
+                confidence = float(_tensor_scalar(box.conf))
+                if confidence < config.MINIMAP_YOLO_CONFIDENCE:
+                    continue
+                cls = int(_tensor_scalar(box.cls))
+                champion_name = self._normalize_yolo_champion_name(_class_name(names, cls))
+                if not champion_name:
+                    continue
+
+                xyxy = _tensor_array(box.xyxy).reshape(-1)[:4]
+                if len(xyxy) != 4:
+                    continue
+                x1 = int(np.clip(np.floor(xyxy[0]), 0, max(width - 1, 0)))
+                y1 = int(np.clip(np.floor(xyxy[1]), 0, max(height - 1, 0)))
+                x2 = int(np.clip(np.ceil(xyxy[2]), x1 + 1, width))
+                y2 = int(np.clip(np.ceil(xyxy[3]), y1 + 1, height))
+                roi = minimap_frame[y1:y2, x1:x2]
+                if roi.size == 0:
+                    continue
+
+                center = (int(round((x1 + x2) / 2)), int(round((y1 + y2) / 2)))
+                radius = max(1, int(round(max(x2 - x1, y2 - y1) / 2)))
+                detections.append(
+                    RawIconDetection(
+                        center,
+                        radius,
+                        self.classify_team(roi),
+                        champion_name,
+                        confidence,
+                        confidence < config.MINIMAP_YOLO_CONFIRM,
+                    )
+                )
+
+        detections.sort(key=lambda item: item.match_score, reverse=True)
+        return detections[: config.MINIMAP_YOLO_MAX_DETECTIONS]
+
+    def _load_yolo_model(self):
+        if self._yolo_model is not None:
+            return self._yolo_model
+        if self._yolo_load_error or not config.MINIMAP_YOLO_ENABLED:
+            return None
+
+        weights = Path(config.MINIMAP_YOLO_WEIGHTS)
+        if not weights.exists():
+            self._yolo_load_error = f"YOLO minimap weights not found: {weights}"
+            logger.warning(self._yolo_load_error)
+            return None
+
+        try:
+            from ultralytics import YOLO
+
+            self._yolo_model = YOLO(str(weights))
+            return self._yolo_model
+        except Exception as exc:  # noqa: BLE001 - unavailable YOLO should produce no minimap detections.
+            self._yolo_load_error = str(exc)
+            logger.warning("YOLO minimap champion detector unavailable: %s", exc)
+            return None
+
+    def _normalize_yolo_champion_name(self, raw_name: str) -> str:
+        normalized = raw_name.strip().replace("_", " ")
+        normalized = re.sub(r"^(player|self|me|ally|blue|green|enemy|red)[\s:_-]+", "", normalized, flags=re.IGNORECASE)
+        normalized = normalized.strip()
+        if not normalized or normalized.lower() in {"player", "ally", "enemy", "champion", "unknown"}:
+            return ""
+        return self._champion_name_lookup.get(_champion_lookup_key(normalized), normalized)
 
     def aggregate_detections(
         self,
@@ -496,6 +558,40 @@ def _center_square(image: np.ndarray) -> np.ndarray:
     y = max((h - side) // 2, 0)
     x = max((w - side) // 2, 0)
     return image[y : y + side, x : x + side]
+
+
+def _champion_lookup_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
+def _class_name(names: object, cls: int) -> str:
+    if isinstance(names, dict):
+        return str(names.get(cls, cls))
+    try:
+        return str(names[cls])  # type: ignore[index]
+    except Exception:  # noqa: BLE001 - malformed model metadata should skip cleanly.
+        return str(cls)
+
+
+def _tensor_scalar(value: object) -> float:
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    array = np.asarray(value).reshape(-1)
+    return float(array[0]) if len(array) else 0.0
+
+
+def _tensor_array(value: object) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    return np.asarray(value, dtype=np.float32)
 
 
 def _known_player_champion(player_champion: str | None, fallback: str) -> str:

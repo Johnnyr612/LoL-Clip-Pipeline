@@ -145,18 +145,18 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const isRunning = Boolean(job && job.status !== "complete" && job.status !== "failed");
 
   return (
-    <aside className="border border-lane bg-white p-4">
+    <aside className="border border-lane bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
       <h2 className="text-base font-semibold">Jobs</h2>
       <div className="mt-4 grid gap-3">
         <label className="grid gap-1 text-sm font-medium">
           Source MP4 path
           <input
-            className="border border-lane px-3 py-2 text-sm outline-none focus:border-accent"
+            className="border border-lane bg-white px-3 py-2 text-sm outline-none focus:border-accent dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
             value={sourcePath}
             onChange={(event) => setSourcePath(event.target.value)}
             placeholder="C:/Videos/clip.mp4"
           />
-          <span className="text-xs font-normal leading-5 text-slate-500">
+          <span className="text-xs font-normal leading-5 text-slate-500 dark:text-slate-400">
             Enter the full path to your Medal.tv clip
             <br />
             {"Example: D:\\Medal\\Clips\\League of Legends\\clip.mp4"}
@@ -169,13 +169,13 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         >
           {busy ? "Starting" : "Start"}
         </button>
-        {errorMessage ? <p className="border border-danger p-3 text-sm text-danger">{errorMessage}</p> : null}
+        {errorMessage ? <p className="border border-danger p-3 text-sm text-danger dark:bg-red-950/40">{errorMessage}</p> : null}
       </div>
 
-      <div className="mt-5 border-t border-lane pt-4">
+      <div className="mt-5 border-t border-lane pt-4 dark:border-slate-800">
         <div className="flex items-center justify-between gap-3 text-sm">
           <span className="break-all font-medium">{job?.id ?? "No job selected"}</span>
-          <span className="shrink-0 text-slate-600">{job?.status ?? "idle"}</span>
+          <span className="shrink-0 text-slate-600 dark:text-slate-400">{job?.status ?? "idle"}</span>
         </div>
         <div className="mt-4 grid gap-3">
           {stages.map((stage, index) => {
@@ -189,19 +189,19 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                 ? "text-success"
                 : isCurrent
                   ? "animate-pulse text-accent"
-                  : "text-slate-400";
+                  : "text-slate-400 dark:text-slate-600";
 
             return (
               <div key={stage} className="grid grid-cols-[20px_1fr] gap-2 text-sm">
                 <span className={`pt-0.5 font-semibold ${iconClass}`}>{icon}</span>
                 <div className="min-w-0">
-                  <span className={isCurrent ? "font-semibold" : "text-slate-700"}>{stageNames[stage]}</span>
+                  <span className={isCurrent ? "font-semibold" : "text-slate-700 dark:text-slate-300"}>{stageNames[stage]}</span>
                   {isCurrent ? (
                     <div className="mt-2">
-                      <div className="h-2 w-full overflow-hidden bg-lane">
+                      <div className="h-2 w-full overflow-hidden bg-lane dark:bg-slate-800">
                         <div className="h-full bg-accent" style={{ width: `${Math.max(0, Math.min(100, job?.progress ?? 0))}%` }} />
                       </div>
-                      <div className="mt-1 flex items-start justify-between gap-2 text-xs text-slate-600">
+                      <div className="mt-1 flex items-start justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
                         <span>{job?.status_message}</span>
                         <span className="shrink-0">{job?.progress ?? 0}%</span>
                       </div>
@@ -213,14 +213,14 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
           })}
         </div>
 
-        {job && isRunning ? <p className="mt-4 text-sm text-slate-600">Running for {formatElapsed(displayElapsed)}</p> : null}
-        {job?.status === "complete" ? <p className="mt-4 text-sm text-slate-600">Completed in {formatElapsed(displayElapsed)}</p> : null}
-        {job?.status === "failed" ? <p className="mt-4 text-sm text-slate-600">Failed after {formatElapsed(displayElapsed)}</p> : null}
+        {job && isRunning ? <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">Running for {formatElapsed(displayElapsed)}</p> : null}
+        {job?.status === "complete" ? <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">Completed in {formatElapsed(displayElapsed)}</p> : null}
+        {job?.status === "failed" ? <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">Failed after {formatElapsed(displayElapsed)}</p> : null}
 
         {job?.status === "failed" ? (
-          <div className="mt-4 border border-danger p-3 text-sm">
+          <div className="mt-4 border border-danger p-3 text-sm dark:bg-red-950/30">
             <p className="font-semibold text-danger">Pipeline Failed</p>
-            <p className="mt-1 text-slate-700">Failed at: {stageNames[failedStage] ?? failedStage}</p>
+            <p className="mt-1 text-slate-700 dark:text-slate-300">Failed at: {stageNames[failedStage] ?? failedStage}</p>
             <p className="mt-2 whitespace-pre-wrap break-words text-danger">{job.error_detail}</p>
             <button
               className="mt-3 border border-danger px-3 py-2 text-sm font-semibold text-danger disabled:opacity-50"

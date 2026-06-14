@@ -69,6 +69,71 @@ def test_circle_border_blue(detector: MinimapDetector):
     assert detector.classify_team(_circle((20, 80, 230))) == "ally"
 
 
+class _FakeYoloBox:
+    cls = np.array([1], dtype=np.float32)
+    conf = np.array([0.91], dtype=np.float32)
+    xyxy = np.array([[10, 10, 42, 42]], dtype=np.float32)
+
+
+class _FakeYoloResult:
+    names = {1: "Ahri"}
+    boxes = [_FakeYoloBox()]
+
+
+class _FakeYoloModel:
+    def __init__(self):
+        self.captured_frame: np.ndarray | None = None
+        self.captured_kwargs: dict[str, object] | None = None
+
+    def predict(self, frame: np.ndarray, **kwargs):
+        self.captured_frame = frame
+        self.captured_kwargs = kwargs
+        return [_FakeYoloResult()]
+
+
+class _FakeEmptyYoloModel:
+    def predict(self, frame: np.ndarray, **kwargs):
+        return []
+
+
+def test_yolo_minimap_detection_returns_raw_icon_detection(detector: MinimapDetector):
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    frame[0, 0] = (1, 2, 3)
+    cv2.circle(frame, (26, 26), 15, (220, 20, 20), thickness=6)
+    fake_model = _FakeYoloModel()
+    previous_model = detector._yolo_model
+    detector._yolo_model = fake_model
+
+    try:
+        detections = detector.detect_icons_yolo(frame)
+    finally:
+        detector._yolo_model = previous_model
+
+    assert len(detections) == 1
+    assert detections[0].champion_name == "Ahri"
+    assert detections[0].team == "enemy"
+    assert detections[0].match_score == pytest.approx(0.91)
+    assert detections[0].is_uncertain is False
+    assert fake_model.captured_frame is not None
+    assert tuple(fake_model.captured_frame[0, 0]) == (3, 2, 1)
+
+
+def test_detect_icons_is_yolo_only(detector: MinimapDetector, monkeypatch):
+    previous_model = detector._yolo_model
+    detector._yolo_model = _FakeEmptyYoloModel()
+
+    def fail_template_detector(_frame):
+        raise AssertionError("template detector should not be used")
+
+    monkeypatch.setattr(detector, "_detect_icons_template", fail_template_detector, raising=False)
+    try:
+        detections = detector.detect_icons(np.zeros((64, 64, 3), dtype=np.uint8))
+    finally:
+        detector._yolo_model = previous_model
+
+    assert detections == []
+
+
 def test_template_match_aatrox(detector: MinimapDetector):
     image = np.array(Image.open(config.MINIMAP_ICONS_DIR / "images" / "Aatrox.png").convert("RGB"))
     blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=1)

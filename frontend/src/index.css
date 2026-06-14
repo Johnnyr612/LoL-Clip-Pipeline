@@ -17,6 +17,11 @@ body {
     sans-serif;
 }
 
+.dark body {
+  background: #0f1724;
+  color: #eef3fb;
+}
+
 button,
 input,
 textarea {

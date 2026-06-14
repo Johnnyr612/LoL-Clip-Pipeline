@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from . import config, models
@@ -208,6 +209,16 @@ class ClipPipeline:
             if vision_result is not None:
                 flags.append("local_yolo_champion_classifier")
                 participants = _apply_vision_participants(participants, vision_result, trusted_player_champion, player_champion_score)
+            detection_debug = _write_detection_debug(
+                job_id,
+                detection_frames,
+                detections,
+                detection_timestamps,
+                sampled_player_positions,
+                trim.clip_start,
+                trim.clip_end,
+                participants,
+            )
             flags.extend(participants.flags)
             await update_job_progress(
                 db_path,
@@ -310,6 +321,7 @@ class ClipPipeline:
                 stage="complete",
                 flags=flags,
                 captions=captions.captions,
+                detection_debug=detection_debug,
                 output_path=str(output_path),
                 stage_failed=None,
                 error_detail=None,
@@ -362,6 +374,106 @@ def _normalize_enemy_positions(enemies: list[ChampionResult]) -> list[ChampionRe
             y = y / 540.0
         normalized.append(ChampionResult(enemy.champion_name, enemy.confidence, enemy.team, (float(x), float(y)), enemy.is_player))
     return normalized
+
+
+def _write_detection_debug(
+    job_id: str,
+    frames: np.ndarray,
+    detections_per_frame: list[list],
+    timestamps: np.ndarray,
+    player_positions: list[tuple[float, float] | None],
+    clip_start: float,
+    clip_end: float,
+    participants: FightParticipants,
+) -> dict:
+    debug_dir = config.OUTPUT_DIR / "debug" / job_id
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    frame_records: list[dict] = []
+    if len(frames) == 0 or len(timestamps) == 0:
+        return _detection_debug_payload(participants, frame_records)
+
+    indexes = np.flatnonzero((timestamps >= clip_start) & (timestamps <= clip_end))
+    if len(indexes) == 0:
+        indexes = np.array([int(np.argmin(np.abs(timestamps - clip_start)))])
+    max_samples = 12
+    if len(indexes) > max_samples:
+        indexes = indexes[np.linspace(0, len(indexes) - 1, max_samples, dtype=int)]
+
+    for ordinal, index in enumerate(indexes):
+        idx = int(index)
+        frame = frames[idx]
+        detections = detections_per_frame[idx] if idx < len(detections_per_frame) else []
+        player_pos = player_positions[idx] if idx < len(player_positions) else None
+        overlay = _draw_detection_overlay(frame, detections, player_pos)
+        filename = f"minimap_{ordinal:02d}_{float(timestamps[idx]):06.2f}s.jpg".replace(".", "_", 1)
+        path = debug_dir / filename
+        cv2.imwrite(str(path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+        frame_records.append(
+            {
+                "timestamp": round(float(timestamps[idx]), 3),
+                "image_url": f"/outputs/debug/{job_id}/{filename}",
+                "white_box": _debug_point(player_pos),
+                "detections": [_debug_detection(item) for item in detections],
+            }
+        )
+
+    return _detection_debug_payload(participants, frame_records)
+
+
+def _detection_debug_payload(participants: FightParticipants, frames: list[dict]) -> dict:
+    return {
+        "summary": {
+            "player": participants.player.champion_name,
+            "allies": [ally.champion_name for ally in participants.allies],
+            "enemies": [enemy.champion_name for enemy in participants.enemies],
+            "fight_type": participants.fight_type,
+        },
+        "frames": frames,
+        "notes": [
+            "The white minimap camera box is treated as the recording/player anchor.",
+            "Each crop is the original minimap sample from the final clipped time range.",
+            "Boxes and labels show YOLO minimap champion detections used for participant aggregation.",
+        ],
+    }
+
+
+def _draw_detection_overlay(frame: np.ndarray, detections: list, player_pos: tuple[float, float] | None) -> np.ndarray:
+    overlay = frame.copy()
+    for detection in detections:
+        x, y = detection.circle_center
+        radius = int(max(detection.radius, 8))
+        color = (235, 64, 64) if detection.team == "enemy" else (70, 135, 245) if detection.team == "ally" else (245, 202, 71)
+        cv2.rectangle(overlay, (max(0, x - radius), max(0, y - radius)), (min(overlay.shape[1] - 1, x + radius), min(overlay.shape[0] - 1, y + radius)), color, 2)
+        label = f"{detection.champion_name} {detection.match_score:.2f}"
+        cv2.putText(overlay, label, (max(0, x - radius), max(14, y - radius - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
+    if player_pos is not None:
+        px, py = int(round(player_pos[0])), int(round(player_pos[1]))
+        cv2.drawMarker(overlay, (px, py), (255, 255, 255), cv2.MARKER_CROSS, 18, 2)
+        cv2.putText(overlay, "white box anchor", (max(0, px - 44), max(14, py - 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+    return overlay
+
+
+def _debug_point(point: tuple[float, float] | None) -> dict | None:
+    if point is None:
+        return None
+    return {"x": round(float(point[0]), 2), "y": round(float(point[1]), 2)}
+
+
+def _debug_detection(detection) -> dict:
+    x, y = detection.circle_center
+    radius = int(detection.radius)
+    return {
+        "champion": detection.champion_name,
+        "team": detection.team,
+        "confidence": round(float(detection.match_score), 3),
+        "uncertain": bool(detection.is_uncertain),
+        "box": {
+            "x1": int(x - radius),
+            "y1": int(y - radius),
+            "x2": int(x + radius),
+            "y2": int(y + radius),
+        },
+    }
 
 
 def _detect_player_champion(

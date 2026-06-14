@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     source_path TEXT,
     output_path TEXT,
     captions TEXT NOT NULL DEFAULT '{}',
+    detection_debug TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -60,6 +61,8 @@ async def _ensure_job_columns(db: aiosqlite.Connection) -> None:
         await db.execute("ALTER TABLE jobs ADD COLUMN progress INTEGER DEFAULT 0")
     if "status_message" not in columns:
         await db.execute("ALTER TABLE jobs ADD COLUMN status_message TEXT DEFAULT ''")
+    if "detection_debug" not in columns:
+        await db.execute("ALTER TABLE jobs ADD COLUMN detection_debug TEXT NOT NULL DEFAULT '{}'")
 
 
 async def create_job(db_path: Path, job_id: str, source_path: Path | str) -> None:
@@ -82,7 +85,7 @@ async def update_job(db_path: Path, job_id: str, **fields: Any) -> None:
         return
     normalized = {}
     for key, value in fields.items():
-        if key in {"flags", "captions"} and not isinstance(value, str):
+        if key in {"flags", "captions", "detection_debug"} and not isinstance(value, str):
             normalized[key] = json.dumps(value)
         elif isinstance(value, Path):
             normalized[key] = str(value)

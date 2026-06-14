@@ -7,7 +7,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Accepts an existing `.mp4` clip path through the dashboard or API.
 - Extracts full-frame and minimap frames with OpenCV.
 - Detects likely fight timing with a fine-tuned VideoMAE checkpoint, falling back to a heuristic score when the checkpoint is missing or inference fails.
-- Detects player/enemy context from minimap icons, HUD portraits, health bars, and optional local YOLO classification.
+- Detects player/enemy context from YOLO minimap champion detections, HUD portraits, health bars, and optional full-frame YOLO classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
 - Generates a social-ready description from detected fight context.
@@ -15,7 +15,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 
 ## Current Limitations
 
-- Champion recognition is still the main weak spot. The current minimap classifier uses champion icons, synthetic augmentation, pHash/template matching, and an optional classifier cache.
+- Champion recognition now uses the YOLOv8 minimap champion detector weights only for minimap champion detection.
 - Description quality depends on upstream detection quality. The OpenAI description request receives fight metadata and dialog text; it does not inspect video frames directly.
 - The current minimap GAN is an augmentation experiment. It can generate minimap-style feature samples, but it is not accurately detecting the correct champions yet.
 - Social publishing is future work; the current app focuses on local clip generation and description drafting.
@@ -58,6 +58,20 @@ $env:LOL_CLIP_YOLO_DEVICE = "0"
 ```
 
 The YOLO classifier is optional. If weights are not configured, the app falls back to minimap, HUD, and health-bar detection.
+
+## Minimap YOLO Champion Detection
+
+Minimap champion detection loads `checkpoints/minimap_yolov8s_best.pt` by default. This checkpoint was copied from the newest detector run in `LoL Minimap Champion Detector/runs/run_003_yolov8s_export_20260610_104747/weights/best.pt`.
+
+Override the checkpoint or inference settings before starting the backend:
+
+```powershell
+$env:LOL_CLIP_MINIMAP_YOLO_WEIGHTS = "D:\path\to\best.pt"
+$env:LOL_CLIP_MINIMAP_YOLO_CONFIDENCE = "0.35"
+$env:LOL_CLIP_MINIMAP_YOLO_DEVICE = "0"
+```
+
+If the minimap YOLO model cannot load or produces no detections for a frame, that frame contributes no minimap champion detections. The app no longer falls back to the older Hough-circle plus icon/template detector for minimap champion detection.
 
 ## Future Social Integration
 
@@ -103,23 +117,21 @@ Example v2 preparation command:
 
 The goal for v2 is to reduce overfitting by giving VideoMAE more varied non-fight windows and a cleaner train/validation split before replacing `checkpoints/videomae_lol_best.pt`.
 
-## Champion Detection Future Work
+## Champion Detection Notes
 
-The next major improvement should be a supervised minimap champion detector/classifier. The current approach works from:
+The minimap detector now uses the supervised YOLOv8 checkpoint as the champion detector. The older icon/template assets are still used by HUD portrait matching and related tooling:
 
 - `data/minimap_icons/images`
 - `data/minimap_icons/champions_manifest.json`
 - synthetic minimap-style augmentation
 - optional low-confidence real minimap crops from actual clips
 
-Planned direction:
+Useful follow-up work:
 
 - Keep Riot/Data Dragon assets current so new champions are not missing.
 - Use a match champion whitelist when available, ideally the 10 champions from Riot's local Live Client Data API during recording.
-- Separate icon localization from champion identity: first find minimap champion bubbles, then classify cropped icons.
+- Keep evaluating YOLO detections against real failed clips and retrain on hard examples.
 - Use temporal voting across frames instead of trusting a single crop.
-- Collect real hard examples from failed clips and retrain on them.
-- Take inspiration from Maknee's `LeagueMinimapDetectionCNN`, especially its synthetic minimap generation and Faster R-CNN-style detector, while retraining on the current champion set instead of relying on old patch weights.
 
 The existing minimap GAN can stay as an experiment for augmentation, but the practical path is labeled synthetic data plus real low-confidence crops.
 
@@ -139,6 +151,7 @@ The existing minimap GAN can stay as an experiment for augmentation, but the pra
 This project includes trained weights and a sample clip through Git LFS:
 
 - `checkpoints/videomae_lol_best.pt`: fine-tuned VideoMAE fight detector.
+- `checkpoints/minimap_yolov8s_best.pt`: YOLOv8 minimap champion detector.
 - `checkpoints/minimap_mask_gan.pt`: current minimap mask GAN experiment.
 - `TestClip.mp4`: sample input clip for testing the pipeline.
 
@@ -209,6 +222,7 @@ C:\path\to\New project\TestClip.mp4
 The trained checkpoint files are intentionally committed with Git LFS so users can run the pipeline without retraining:
 
 - `checkpoints/videomae_lol_best.pt`
+- `checkpoints/minimap_yolov8s_best.pt`
 - `checkpoints/minimap_mask_gan.pt`
 
 If the VideoMAE checkpoint is missing, fight detection falls back to heuristics. If the OpenAI API key is missing, descriptions use the fallback generator.

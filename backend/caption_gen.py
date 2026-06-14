@@ -37,17 +37,28 @@ def _fallback_caption(
     clean_enemies = _clean_champion_names(enemy_names)
     minimap_context = [name for name in _clean_champion_names(minimap_champions or []) if name != player_champion]
     enemy_text = ", ".join(clean_enemies or minimap_context[:4]) or "the enemy"
+    detected_text = _detected_matchup_text(player_champion, clean_enemies, minimap_context)
     if len(clean_enemies or minimap_context) == 1:
         hook = f"{player_champion} took the {(clean_enemies or minimap_context)[0]} duel"
     else:
         hook = f"{player_champion} turned this {fight_type} into a highlight"
     caption = (
         f"{hook}\n"
-        f"Clean spacing, clutch timing, and {enemy_text} had one chance to back off. "
+        f"{detected_text} made this fight feel personal. Clean spacing, clutch timing, and {enemy_text} had one chance to back off. "
         f"Would you take this fight? #leagueoflegends"
     )[:500]
     tags = ["#gaming", "#gamer", "#clips", "#fyp", "#viral", "#leagueoflegends", "#lolclips", "#riotgames", "#summonersrift", "#leagueclips"]
     return {"caption": caption, "hashtags": tags, "hook_line": hook}
+
+
+def _detected_matchup_text(player_champion: str, enemy_names: Sequence[str], minimap_context: Sequence[str]) -> str:
+    player = player_champion if player_champion and not player_champion.startswith("unknown") else "The player"
+    opponents = _clean_champion_names(enemy_names) or [name for name in _clean_champion_names(minimap_context) if name != player]
+    if not opponents:
+        return f"{player}'s detected champion read"
+    if len(opponents) == 1:
+        return f"{player} into {opponents[0]}"
+    return f"{player} into {', '.join(opponents[:4])}"
 
 
 def _build_prompt(
@@ -59,19 +70,23 @@ def _build_prompt(
     dialog_text: str,
 ) -> str:
     enemies = ", ".join(_clean_champion_names(enemy_names)) or "unknown enemies"
-    minimap_context = ", ".join(_clean_champion_names(minimap_champions)) or "unknown"
+    detected_champions = _clean_champion_names(minimap_champions)
+    minimap_context = ", ".join(detected_champions) or "unknown"
+    matchup = _detected_matchup_text(player_champion, enemy_names, detected_champions)
     return f"""Write a viral social media description for this LoL clip.
 
 Clip details:
 - Player champion: {player_champion}
 - Enemies fought: {enemies}
-- Champions actively fighting or collapsing on the fight from original minimap/HUD: {minimap_context}
+- Detected champion matchup to build the description around: {matchup}
+- All detected champions actively fighting or collapsing from minimap/HUD: {minimap_context}
 - Fight type: {fight_type}
 - Fight duration: {fight_duration:.1f} seconds
 - Spoken lines detected: {dialog_text or 'none'}
 
 Rules:
 - First line: hook only, no hashtags, no generic openings
+- Base the hook and body on the detected champion matchup when champion names are known
 - 3-5 emojis placed naturally in text, not clustered at end
 - Exactly 1 rhetorical question or call-to-action
 - If any champion is 'unknown': say 'the enemy', never guess name
