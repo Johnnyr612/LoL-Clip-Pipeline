@@ -4,14 +4,14 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 
 ## What It Does
 
-- Accepts an existing `.mp4` clip path through the dashboard or API.
+- Accepts an existing `.mp4` clip path through the dashboard or `/process` API. The backend also has a `/jobs` upload endpoint, but the current dashboard uses local paths.
 - Extracts full-frame and minimap frames with OpenCV.
 - Detects likely fight timing with a fine-tuned VideoMAE checkpoint, falling back to a heuristic score when the checkpoint is missing or inference fails.
 - Detects player/enemy context from YOLO minimap champion detections, HUD portraits, health bars, and optional full-frame YOLO classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
 - Generates a social-ready description from detected fight context.
-- Stores job state, progress, flags, output paths, and descriptions in SQLite.
+- Stores job state, progress, flags, output paths, detection debug data, and descriptions in SQLite.
 
 ## Current Limitations
 
@@ -44,7 +44,7 @@ Fallback flags are stored as `caption_api_key_missing` or `caption_fallback`.
 
 ## Local YOLO Participant Classification
 
-Participant classification can use a local YOLO model instead of the OpenAI vision API. Point the app at your weights before starting the backend:
+Participant classification can use an optional local full-frame YOLO model. Point the app at your weights before starting the backend:
 
 ```powershell
 $env:LOL_CLIP_YOLO_WEIGHTS = "D:\path\to\your\weights.pt"
@@ -57,7 +57,7 @@ $env:LOL_CLIP_YOLO_CONFIDENCE = "0.35"
 $env:LOL_CLIP_YOLO_DEVICE = "0"
 ```
 
-The YOLO classifier is optional. If weights are not configured, the app falls back to minimap, HUD, and health-bar detection.
+The full-frame YOLO classifier is optional. If weights are not configured, the app falls back to minimap YOLO detections, HUD portrait matching, and health-bar detection.
 
 ## Minimap YOLO Champion Detection
 
@@ -100,22 +100,25 @@ Fine-tuning is handled by `backend/trainer_worker.py`:
 
 The first training pass overfit because the dataset was too small and too easy: many negative windows came from the same source clips and did not represent enough real non-fight gameplay. That produced a checkpoint that could memorize the training distribution better than it generalized to new clips.
 
-## Training V2 Plan
+## Fight Training Status
 
-Future fight-boundary retraining should use the `training-v2` branch. That branch adds a better negative-sample workflow:
+The current branch includes the VideoMAE trainer in `backend/trainer.py` and `backend/trainer_worker.py`. It trains from a directory of `.mp4` clips plus a labels JSON file containing `filename`, `fight_start`, `fight_end`, and optional duration fields. It can also reuse precomputed frame arrays from `precomputed/` when matching `.npy` files exist.
 
-1. Build additional negatives from full clips with `backend/prepare_negatives.py`.
-2. Save precomputed frame arrays under `precomputed_v2/`.
-3. Write expanded labels to `data/trainer_labels_v2.json`.
-4. Train from the `training-v2` branch using those labels and `precomputed_v2`.
-
-Example v2 preparation command:
+Example direct training command:
 
 ```powershell
-.\.venv\Scripts\python.exe backend\prepare_negatives.py --clips-dir "D:\Medal\Clips\League of Legends" --labels data\trainer_labels_all.json --output-labels data\trainer_labels_v2.json --precomputed-dir precomputed_v2 --max-negatives-per-clip 3
+.\.venv\Scripts\python.exe backend\trainer.py --clips_dir "D:\path\to\training_clips" --labels "D:\path\to\labels.json" --epochs 25 --batch_size 4 --output_dir checkpoints
 ```
 
-The goal for v2 is to reduce overfitting by giving VideoMAE more varied non-fight windows and a cleaner train/validation split before replacing `checkpoints/videomae_lol_best.pt`.
+The backend also exposes `POST /train` and `GET /train/stream` for starting a run and streaming metrics. The Vite dev server proxies those routes, but the current frontend does not expose training controls.
+
+Future fight-boundary retraining should still focus on better negative samples:
+
+- Add varied non-fight windows from full gameplay clips.
+- Save precomputed frame arrays under `precomputed/` or a branch-specific precomputed directory.
+- Keep train/validation clips separated by source video where possible.
+
+This branch does not include a `backend/prepare_negatives.py` helper. If that workflow is revived, add the helper before documenting commands for it.
 
 ## Champion Detection Notes
 
@@ -141,8 +144,9 @@ The existing minimap GAN can stay as an experiment for augmentation, but the pra
 - Node.js and npm
 - FFmpeg and ffprobe on `PATH`
 - Git LFS for large checkpoint and sample video files.
-- Optional: CUDA-enabled PyTorch for faster VideoMAE/GAN training
-- `OPENAI_API_KEY` for generated descriptions.
+- PyTorch for VideoMAE inference/training and Ultralytics YOLO. It is intentionally not pinned in `requirements.txt`; install a CPU or CUDA build appropriate for your machine.
+- Optional: CUDA-enabled PyTorch for faster VideoMAE/GAN training.
+- Optional: `OPENAI_API_KEY` for OpenAI-generated descriptions. Without it, the deterministic fallback description generator is used.
 - Optional: `LOL_CLIP_CAPTION_MODEL` to override the caption model.
 - Optional: `LOL_CLIP_YOLO_WEIGHTS` for local YOLO participant classification.
 
@@ -214,12 +218,17 @@ TestClip.mp4
 For example, from this project directory:
 
 ```text
-C:\path\to\New project\TestClip.mp4
+C:\path\to\CS668 LoL Auto Clip Trimmer\TestClip.mp4
 ```
+
+Runtime files are written outside the repo:
+
+- Database, uploads, temp files, logs, and minimap classifier cache: `%APPDATA%\LoLClipApp`
+- Encoded clips and minimap detection debug images: `%USERPROFILE%\Videos\LoLClipApp`
 
 ## Local Checkpoint Files
 
-The trained checkpoint files are intentionally committed with Git LFS so users can run the pipeline without retraining:
+The trained checkpoint files are intentionally tracked with Git LFS so users can run the pipeline without retraining:
 
 - `checkpoints/videomae_lol_best.pt`
 - `checkpoints/minimap_yolov8s_best.pt`
@@ -272,6 +281,6 @@ Train the minimap mask GAN:
 
 - `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, descriptions, and training coordinator.
 - `frontend/`: React/Vite dashboard.
-- `data/minimap_icons/`: champion icon source data used by minimap detection.
+- `data/minimap_icons/`: champion icon source data used by HUD portrait matching, classifier cache tooling, and augmentation experiments.
 - `tools/`: minimap classifier and GAN data tools.
-- `checkpoints/`: local model checkpoints, ignored by Git.
+- `checkpoints/`: model checkpoints tracked through Git LFS.
