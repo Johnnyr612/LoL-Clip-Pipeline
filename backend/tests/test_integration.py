@@ -11,11 +11,11 @@ from backend.pipeline import ClipPipeline
 
 
 @pytest.mark.asyncio
-async def test_synthetic_pipeline_stages_1_to_6(tmp_path):
+async def test_generated_sample_pipeline_stages_1_to_6(tmp_path):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         pytest.skip("ffmpeg/ffprobe not installed")
 
-    source = tmp_path / "synthetic.mp4"
+    source = tmp_path / "generated_sample.mp4"
     subprocess.run(
         [
             "ffmpeg",
@@ -39,7 +39,7 @@ async def test_synthetic_pipeline_stages_1_to_6(tmp_path):
 
     db_path = tmp_path / "test.sqlite3"
     pipeline = ClipPipeline(db_path)
-    job_id = await pipeline.run(source, "synthetic")
+    job_id = await pipeline.run(source, "generated_sample")
     output = tmp_path / "dummy"
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row

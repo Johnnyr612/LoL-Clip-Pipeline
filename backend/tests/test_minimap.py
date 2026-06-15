@@ -208,10 +208,6 @@ def test_player_hud_detection(detector: MinimapDetector):
     assert score > 0.45
 
 
-def test_augmentation_count(detector: MinimapDetector):
-    assert len(detector.augmented["Aatrox"]) == 36
-
-
 def test_corrupt_icon_skipped(tmp_path):
     icons_dir = tmp_path / "minimap_icons"
     images_dir = icons_dir / "images"

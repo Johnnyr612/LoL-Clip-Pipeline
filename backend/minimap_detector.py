@@ -13,7 +13,6 @@ import numpy as np
 from PIL import Image
 
 from . import config
-from .minimap_classifier import MinimapIconClassifier
 
 Rect = tuple[int, int, int, int]
 
@@ -56,12 +55,9 @@ class MinimapDetector:
         self.key_to_name: dict[str, str] = {}
         self._champion_name_lookup: dict[str, str] = {}
         self.templates: dict[str, np.ndarray] = {}
-        self.augmented: dict[str, list[np.ndarray]] = {}
         self.base_names: list[str] = []
         self.base_matrix = np.empty((0, 90 * 90), dtype=np.float32)
-        self.augmented_matrices: dict[str, np.ndarray] = {}
         self.phash_templates: dict[str, list[np.ndarray]] = {}
-        self.icon_classifier: MinimapIconClassifier | None = None
         self._yolo_model: Any | None = None
         self._yolo_load_error: str | None = None
         self._minimap_rect: Optional[Rect] = None
@@ -93,25 +89,13 @@ class MinimapDetector:
                 continue
 
             self.templates[name] = self._center_crop_gray(rgb)
-            self.augmented[name] = self._augment_template(rgb)
             self.phash_templates[name] = [self._phash(rgb), self._phash(rgb[15:105, 15:105])]
         self._build_match_indexes()
-        if config.MINIMAP_CLASSIFIER_ENABLED:
-            try:
-                self.icon_classifier = MinimapIconClassifier.load_or_build(images_dir, config.MINIMAP_CLASSIFIER_CACHE_PATH)
-            except Exception as exc:  # noqa: BLE001 - detector can still fall back to templates.
-                logger.warning("Minimap icon classifier unavailable: %s", exc)
-                self.icon_classifier = None
 
     def _build_match_indexes(self) -> None:
         self.base_names = list(self.templates)
         if self.base_names:
             self.base_matrix = self._normalize_rows([self.templates[name] for name in self.base_names])
-        self.augmented_matrices = {
-            name: self._normalize_rows(templates)
-            for name, templates in self.augmented.items()
-            if templates
-        }
 
     @staticmethod
     def _normalize_rows(images: list[np.ndarray]) -> np.ndarray:
@@ -149,46 +133,6 @@ class MinimapDetector:
         low_freq = dct[:8, :8].reshape(-1)
         median = float(np.median(low_freq[1:]))
         return low_freq > median
-
-    @staticmethod
-    def _scale_pad(rgb: np.ndarray, scale: float) -> np.ndarray:
-        size = max(1, int(round(120 * scale)))
-        resized = cv2.resize(rgb, (size, size), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
-        if size >= 120:
-            offset = (size - 120) // 2
-            return resized[offset : offset + 120, offset : offset + 120]
-        canvas = np.zeros((120, 120, 3), dtype=np.uint8)
-        offset = (120 - size) // 2
-        canvas[offset : offset + size, offset : offset + size] = resized
-        return canvas
-
-    @staticmethod
-    def _brightness(rgb: np.ndarray, factor: float) -> np.ndarray:
-        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV).astype(np.float32)
-        hsv[:, :, 2] = np.clip(hsv[:, :, 2] * factor, 0, 255)
-        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
-
-    @staticmethod
-    def _border_variant(rgb: np.ndarray, color: tuple[int, int, int]) -> np.ndarray:
-        out = rgb.copy()
-        cv2.circle(out, (60, 60), 59, color, thickness=15, lineType=cv2.LINE_AA)
-        return out
-
-    def _augment_template(self, rgb: np.ndarray) -> list[np.ndarray]:
-        variants: list[np.ndarray] = []
-        border_colors = [(220, 35, 35), (35, 110, 235)]
-        blur_sigmas = [0.5, 1.0]
-        scales = [0.85, 1.00, 1.10]
-        brightness = [0.80, 1.00, 1.15]
-        for border in border_colors:
-            bordered = self._border_variant(rgb, border)
-            for sigma in blur_sigmas:
-                blurred = cv2.GaussianBlur(bordered, (0, 0), sigmaX=sigma)
-                for scale in scales:
-                    scaled = self._scale_pad(blurred, scale)
-                    for factor in brightness:
-                        variants.append(self._center_crop_gray(self._brightness(scaled, factor)))
-        return variants
 
     def locate_minimap(self, frame: np.ndarray) -> Rect:
         if self._minimap_rect is not None:
@@ -306,11 +250,7 @@ class MinimapDetector:
 
         for idx in candidate_indices:
             name = self.base_names[int(idx)]
-            augmented = self.augmented_matrices.get(name)
-            if augmented is None or augmented.size == 0:
-                score = float(base_scores[int(idx)])
-            else:
-                score = float(np.max(augmented @ roi))
+            score = float(base_scores[int(idx)])
             if score > best_score:
                 best_name = name
                 best_score = score
@@ -320,16 +260,6 @@ class MinimapDetector:
         gray = cv2.cvtColor(cv2.resize(roi_rgb, (90, 90), interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY)
         gray_name, gray_score = self.match_champion(gray)
         phash_name, phash_distance = self._match_phash(roi_rgb)
-        classifier_name = "unknown"
-        classifier_score = -1.0
-        classifier_margin = 0.0
-        if self.icon_classifier is not None:
-            classifier_match = self.icon_classifier.match(roi_rgb)
-            classifier_name = classifier_match.champion_name
-            classifier_score = classifier_match.confidence
-            classifier_margin = classifier_match.margin
-            if classifier_score >= config.MINIMAP_CLASSIFIER_CONFIRM and classifier_margin >= config.MINIMAP_CLASSIFIER_MARGIN:
-                return classifier_name, classifier_score
         if (
             phash_distance <= config.ICON_PHASH_CONFIRM_MAX_DISTANCE
             and (gray_score >= config.ICON_PHASH_MIN_GRAY_SCORE or gray_name == phash_name)
@@ -338,8 +268,6 @@ class MinimapDetector:
             return phash_name, float(confidence)
         if phash_distance <= config.ICON_PHASH_SUPPORT_MAX_DISTANCE and gray_name == phash_name:
             return gray_name, max(gray_score, float(1.0 - phash_distance / 64.0))
-        if classifier_score >= config.MINIMAP_CLASSIFIER_SUPPORT and classifier_margin >= config.MINIMAP_CLASSIFIER_MARGIN:
-            return classifier_name, classifier_score
         return gray_name, gray_score
 
     def _match_phash(self, roi_rgb: np.ndarray) -> tuple[str, int]:

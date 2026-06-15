@@ -17,7 +17,6 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 
 - Champion recognition now uses the YOLOv8 minimap champion detector weights only for minimap champion detection.
 - Description quality depends on upstream detection quality. The OpenAI description request receives fight metadata and dialog text; it does not inspect video frames directly.
-- The current minimap GAN is an augmentation experiment. It can generate minimap-style feature samples, but it is not accurately detecting the correct champions yet.
 - Social publishing is future work; the current app focuses on local clip generation and description drafting.
 
 ## Description Generation
@@ -28,10 +27,10 @@ Descriptions are generated with the OpenAI API using `OPENAI_API_KEY`. Set it in
 $env:OPENAI_API_KEY = "sk-..."
 ```
 
-By default the app uses `gpt-4o-mini` for descriptions. You can override that without code changes:
+By default the app uses `gpt-4o` for descriptions. You can override that without code changes:
 
 ```powershell
-$env:LOL_CLIP_CAPTION_MODEL = "gpt-4o-mini"
+$env:LOL_CLIP_CAPTION_MODEL = "gpt-4o"
 ```
 
 When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns invalid JSON, the app uses a deterministic fallback description from `backend/caption_gen.py`. The fallback builds a payload from the detected player champion, enemy champions, fight type, and minimap context. It returns:
@@ -122,12 +121,10 @@ This branch does not include a `backend/prepare_negatives.py` helper. If that wo
 
 ## Champion Detection Notes
 
-The minimap detector now uses the supervised YOLOv8 checkpoint as the champion detector. The older icon/template assets are still used by HUD portrait matching and related tooling:
+The minimap detector now uses the supervised YOLOv8 checkpoint as the champion detector. The icon assets are still used by HUD portrait matching:
 
 - `data/minimap_icons/images`
 - `data/minimap_icons/champions_manifest.json`
-- synthetic minimap-style augmentation
-- optional low-confidence real minimap crops from actual clips
 
 Useful follow-up work:
 
@@ -136,8 +133,6 @@ Useful follow-up work:
 - Keep evaluating YOLO detections against real failed clips and retrain on hard examples.
 - Use temporal voting across frames instead of trusting a single crop.
 
-The existing minimap GAN can stay as an experiment for augmentation, but the practical path is labeled synthetic data plus real low-confidence crops.
-
 ## Requirements
 
 - Python 3.12
@@ -145,7 +140,7 @@ The existing minimap GAN can stay as an experiment for augmentation, but the pra
 - FFmpeg and ffprobe on `PATH`
 - Git LFS for large checkpoint and sample video files.
 - PyTorch for VideoMAE inference/training and Ultralytics YOLO. It is intentionally not pinned in `requirements.txt`; install a CPU or CUDA build appropriate for your machine.
-- Optional: CUDA-enabled PyTorch for faster VideoMAE/GAN training.
+- Optional: CUDA-enabled PyTorch for faster VideoMAE training.
 - Optional: `OPENAI_API_KEY` for OpenAI-generated descriptions. Without it, the deterministic fallback description generator is used.
 - Optional: `LOL_CLIP_CAPTION_MODEL` to override the caption model.
 - Optional: `LOL_CLIP_YOLO_WEIGHTS` for local YOLO participant classification.
@@ -156,7 +151,6 @@ This project includes trained weights and a sample clip through Git LFS:
 
 - `checkpoints/videomae_lol_best.pt`: fine-tuned VideoMAE fight detector.
 - `checkpoints/minimap_yolov8s_best.pt`: YOLOv8 minimap champion detector.
-- `checkpoints/minimap_mask_gan.pt`: current minimap mask GAN experiment.
 - `TestClip.mp4`: sample input clip for testing the pipeline.
 
 `TestClip.mp4` was not part of the training set. It is included only as a reproducible test clip so a new user can run the pipeline end to end after setup.
@@ -223,7 +217,7 @@ C:\path\to\CS668 LoL Auto Clip Trimmer\TestClip.mp4
 
 Runtime files are written outside the repo:
 
-- Database, uploads, temp files, logs, and minimap classifier cache: `%APPDATA%\LoLClipApp`
+- Database, uploads, temp files, and logs: `%APPDATA%\LoLClipApp`
 - Encoded clips and minimap detection debug images: `%USERPROFILE%\Videos\LoLClipApp`
 
 ## Local Checkpoint Files
@@ -232,7 +226,6 @@ The trained checkpoint files are intentionally tracked with Git LFS so users can
 
 - `checkpoints/videomae_lol_best.pt`
 - `checkpoints/minimap_yolov8s_best.pt`
-- `checkpoints/minimap_mask_gan.pt`
 
 If the VideoMAE checkpoint is missing, fight detection falls back to heuristics. If the OpenAI API key is missing, descriptions use the fallback generator.
 
@@ -253,34 +246,9 @@ Run backend tests:
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Build the minimap classifier cache:
-
-```powershell
-.\.venv\Scripts\python.exe tools\build_minimap_classifier_cache.py
-```
-
-Build the cache with GAN samples:
-
-```powershell
-.\.venv\Scripts\python.exe tools\build_minimap_classifier_cache.py --gan-checkpoint checkpoints\minimap_mask_gan.pt --gan-samples-per-icon 12
-```
-
-Collect real minimap GAN crops:
-
-```powershell
-.\.venv\Scripts\python.exe tools\collect_minimap_gan_crops.py --clips "D:\Medal\Clips\League of Legends"
-```
-
-Train the minimap mask GAN:
-
-```powershell
-.\.venv\Scripts\python.exe tools\train_minimap_mask_gan.py
-```
-
 ## Project Layout
 
 - `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, descriptions, and training coordinator.
 - `frontend/`: React/Vite dashboard.
-- `data/minimap_icons/`: champion icon source data used by HUD portrait matching, classifier cache tooling, and augmentation experiments.
-- `tools/`: minimap classifier and GAN data tools.
+- `data/minimap_icons/`: champion icon source data used by HUD portrait matching.
 - `checkpoints/`: model checkpoints tracked through Git LFS.

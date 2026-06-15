@@ -26,9 +26,6 @@ training_clips/
 # Training logs
 training_logs/
 
-# Minimap GAN datasets and generated caches
-data/minimap_gan/
-
 # Jupyter notebooks (local only)
 *.ipynb
 
