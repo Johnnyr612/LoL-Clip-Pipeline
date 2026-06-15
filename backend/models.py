@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_detail TEXT,
     source_path TEXT,
     output_path TEXT,
-    captions TEXT NOT NULL DEFAULT '{}',
     detection_debug TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -85,7 +84,7 @@ async def update_job(db_path: Path, job_id: str, **fields: Any) -> None:
         return
     normalized = {}
     for key, value in fields.items():
-        if key in {"flags", "captions", "detection_debug"} and not isinstance(value, str):
+        if key in {"flags", "detection_debug"} and not isinstance(value, str):
             normalized[key] = json.dumps(value)
         elif isinstance(value, Path):
             normalized[key] = str(value)

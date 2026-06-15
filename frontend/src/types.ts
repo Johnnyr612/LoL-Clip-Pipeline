@@ -9,16 +9,9 @@ export type JobRecord = {
   error_detail?: string | null;
   source_path?: string | null;
   output_path?: string | null;
-  captions?: string;
   detection_debug?: string;
   created_at: string;
   updated_at: string;
-};
-
-export type CaptionPayload = {
-  caption: string;
-  hashtags: string[];
-  hook_line: string;
 };
 
 export type TrainingMetric = {

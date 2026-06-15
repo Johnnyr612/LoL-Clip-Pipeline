@@ -1,6 +1,6 @@
 # LoL Clip Pipeline
 
-Local pipeline for turning League of Legends source clips into vertical short-form videos with fight detection, adaptive cropping, and generated descriptions.
+Local pipeline for turning League of Legends source clips into vertical short-form videos with fight detection and adaptive cropping.
 
 ## What It Does
 
@@ -10,36 +10,12 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Detects player/enemy context from YOLO minimap champion detections, HUD portraits, health bars, and optional full-frame YOLO classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
-- Generates a social-ready description from detected fight context.
-- Stores job state, progress, flags, output paths, detection debug data, and descriptions in SQLite.
+- Stores job state, progress, flags, output paths, and detection debug data in SQLite.
 
 ## Current Limitations
 
 - Champion recognition now uses the YOLOv8 minimap champion detector weights only for minimap champion detection.
-- Description quality depends on upstream detection quality. The OpenAI description request receives fight metadata and dialog text; it does not inspect video frames directly.
-- Social publishing is future work; the current app focuses on local clip generation and description drafting.
-
-## Description Generation
-
-Descriptions are generated with the OpenAI API using `OPENAI_API_KEY`. Set it in your environment before starting the backend:
-
-```powershell
-$env:OPENAI_API_KEY = "sk-..."
-```
-
-By default the app uses `gpt-4o` for descriptions. You can override that without code changes:
-
-```powershell
-$env:LOL_CLIP_CAPTION_MODEL = "gpt-4o"
-```
-
-When `OPENAI_API_KEY` is missing, the OpenAI request fails, or the model returns invalid JSON, the app uses a deterministic fallback description from `backend/caption_gen.py`. The fallback builds a payload from the detected player champion, enemy champions, fight type, and minimap context. It returns:
-
-- `caption`: a short hook plus body text.
-- `hashtags`: fixed gaming and League hashtags.
-- `hook_line`: the first-line hook, for example a duel hook when one enemy is known.
-
-Fallback flags are stored as `caption_api_key_missing` or `caption_fallback`.
+- Social publishing is not wired into the current app; it focuses on local clip generation and detection review.
 
 ## Local YOLO Participant Classification
 
@@ -74,12 +50,12 @@ If the minimap YOLO model cannot load or produces no detections for a frame, tha
 
 ## Future Social Integration
 
-TikTok and Instagram publishing are intentionally not wired into the current app. They should be revisited after clip quality, champion detection, and description generation are stable.
+TikTok and Instagram publishing are intentionally not wired into the current app. They should be revisited after clip quality and champion detection are stable.
 
 Future work should include:
 
 - TikTok OAuth account connection.
-- TikTok draft upload or direct post using the generated description.
+- TikTok draft upload or direct post.
 - Instagram/Reels publishing once a public video URL flow is available.
 - Safe token storage, refresh handling, and clear publishing status in the dashboard.
 
@@ -141,8 +117,6 @@ Useful follow-up work:
 - Git LFS for large checkpoint and sample video files.
 - PyTorch for VideoMAE inference/training and Ultralytics YOLO. It is intentionally not pinned in `requirements.txt`; install a CPU or CUDA build appropriate for your machine.
 - Optional: CUDA-enabled PyTorch for faster VideoMAE training.
-- Optional: `OPENAI_API_KEY` for OpenAI-generated descriptions. Without it, the deterministic fallback description generator is used.
-- Optional: `LOL_CLIP_CAPTION_MODEL` to override the caption model.
 - Optional: `LOL_CLIP_YOLO_WEIGHTS` for local YOLO participant classification.
 
 ## Included Large Files
@@ -227,7 +201,7 @@ The trained checkpoint files are intentionally tracked with Git LFS so users can
 - `checkpoints/videomae_lol_best.pt`
 - `checkpoints/minimap_yolov8s_best.pt`
 
-If the VideoMAE checkpoint is missing, fight detection falls back to heuristics. If the OpenAI API key is missing, descriptions use the fallback generator.
+If the VideoMAE checkpoint is missing, fight detection falls back to heuristics.
 
 ## Secrets
 
@@ -236,7 +210,7 @@ Do not commit real API keys. Local environment files are ignored by Git:
 - `.env`
 - `.env.*`
 
-Use `.env.example` as a template or set `OPENAI_API_KEY` directly in your shell before starting the backend.
+Use `.env.example` as a template for local model settings.
 
 ## Useful Commands
 
@@ -248,7 +222,7 @@ Run backend tests:
 
 ## Project Layout
 
-- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, descriptions, and training coordinator.
+- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, and training coordinator.
 - `frontend/`: React/Vite dashboard.
 - `data/minimap_icons/`: champion icon source data used by HUD portrait matching.
 - `checkpoints/`: model checkpoints tracked through Git LFS.

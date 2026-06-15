@@ -86,10 +86,7 @@ FFMPEG_PRESET = "fast"
 CROP_QUANTIZE_THRESHOLD = 5
 
 VIDEOMAE_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_best.pt"
-CAPTION_TIMEOUT_SEC = 90
 PLAYER_NAME = "Aaplay44"
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-CAPTION_MODEL = os.environ.get("LOL_CLIP_CAPTION_MODEL", "gpt-4o")
 VISION_CLASSIFIER_TIMEOUT_SEC = 45
 VISION_CLASSIFIER_MIN_CONFIDENCE = 0.60
 _YOLO_WEIGHTS = os.environ.get("LOL_CLIP_YOLO_WEIGHTS", "").strip()
@@ -104,11 +101,3 @@ TEMP_DIR = APPDATA_DIR / "temp"
 LOG_DIR = APPDATA_DIR / "logs"
 OUTPUT_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "LoLClipApp"
 DB_PATH = APPDATA_DIR / "lol_clip_app.sqlite3"
-
-CAPTION_SYSTEM_PROMPT = (
-    "You are a viral gaming content creator specializing in League of Legends clips. "
-    "You write descriptions that maximize engagement, "
-    "views, and follows. You understand gaming culture, LoL memes, champion lore, "
-    "and what makes short-form gaming content go viral. You never use generic "
-    "phrases. You never hallucinate champion names."
-)

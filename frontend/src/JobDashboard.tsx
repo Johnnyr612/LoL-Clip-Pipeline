@@ -7,7 +7,6 @@ const stages = [
   "stage3_fight",
   "stage4_crop",
   "stage5_encode",
-  "stage6_caption",
   "complete"
 ] as const;
 
@@ -17,7 +16,6 @@ const stageNames: Record<string, string> = {
   stage3_fight: "Fight Detection",
   stage4_crop: "Crop Trajectory",
   stage5_encode: "Video Encoding",
-  stage6_caption: "Description Generation",
   complete: "Complete",
   queued: "Queued"
 };

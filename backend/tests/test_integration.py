@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 
@@ -46,8 +45,6 @@ async def test_generated_sample_pipeline_stages_1_to_6(tmp_path):
         row = await (await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))).fetchone()
     assert row["status"] == "complete"
     assert row["stage_failed"] is None
-    captions = json.loads(row["captions"])
-    assert {"caption", "hashtags", "hook_line"} <= captions["default"].keys()
     assert row["output_path"]
 
     probe = subprocess.run(

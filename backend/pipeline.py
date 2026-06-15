@@ -11,7 +11,6 @@ import cv2
 import numpy as np
 
 from . import config, models
-from .caption_gen import CaptionGenerator
 from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
 from .fight_detector import (
@@ -78,7 +77,6 @@ class ClipPipeline:
         self.fight_detector = FightDetector()
         self.cropper = AdaptiveCropper()
         self.encoder = VideoEncoder()
-        self.captioner = CaptionGenerator()
 
     async def run(self, source_path: Path, job_id: str | None = None) -> str:
         job_id = job_id or uuid.uuid4().hex
@@ -288,39 +286,12 @@ class ClipPipeline:
                 "Video encoded successfully",
             )
 
-            current_stage = "stage6_caption"
-            await models.update_job(db_path, job_id, stage=current_stage, output_path=output_path, flags=flags)
-            await update_job_progress(
-                db_path,
-                job_id,
-                "stage6_caption",
-                10,
-                "Generating description...",
-            )
-            dialog_text = " ".join(segment.text for segment in trim.dialog_segments)
-            captions = self.captioner.generate(
-                participants.player.champion_name,
-                [enemy.champion_name for enemy in participants.enemies],
-                participants.fight_type,
-                trim.fight_duration,
-                dialog_text,
-                _minimap_champion_context(participants),
-            )
-            flags.extend(captions.flags)
-            await update_job_progress(
-                db_path,
-                job_id,
-                "stage6_caption",
-                100,
-                "Descriptions generated successfully",
-            )
             await models.update_job(
                 db_path,
                 job_id,
                 status="complete",
                 stage="complete",
                 flags=flags,
-                captions=captions.captions,
                 detection_debug=detection_debug,
                 output_path=str(output_path),
                 stage_failed=None,
@@ -556,15 +527,3 @@ def _position_to_pixels(position: tuple[float, float] | None, frame_shape: tuple
         return None
     height, width = frame_shape[:2]
     return (float(position[0] * width), float(position[1] * height))
-
-
-def _minimap_champion_context(participants: FightParticipants) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for champion in [participants.player, *participants.allies, *participants.enemies]:
-        name = champion.champion_name
-        if not name or name.startswith("unknown") or name in seen:
-            continue
-        names.append(name)
-        seen.add(name)
-    return names

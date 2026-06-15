@@ -1,18 +1,8 @@
-import React from "react";
-import type { CaptionPayload, DetectionDebug, DetectionDebugResult, JobRecord } from "./types";
+import type { DetectionDebug, DetectionDebugResult, JobRecord } from "./types";
 
-export function CaptionEditor({ job }: { job: JobRecord | null }) {
-  const captions = safeJson<Record<string, CaptionPayload>>(job?.captions, {});
+export function OutputPanel({ job }: { job: JobRecord | null }) {
   const detectionDebug = safeJson<DetectionDebug>(job?.detection_debug, {});
-  const active = captions.default;
-  const [text, setText] = React.useState("");
   const outputUrl = outputUrlFromPath(job?.output_path);
-
-  React.useEffect(() => {
-    setText(active?.caption ?? "");
-  }, [active?.caption]);
-
-  const description = [text, (active?.hashtags ?? []).join(" ")].filter(Boolean).join("\n\n");
 
   return (
     <section className="border border-lane bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -36,24 +26,6 @@ export function CaptionEditor({ job }: { job: JobRecord | null }) {
           No completed clip selected
         </div>
       )}
-
-      <h2 className="mt-5 text-base font-semibold">Description</h2>
-      <textarea
-        className="mt-4 min-h-40 w-full resize-y border border-lane bg-white p-3 text-sm outline-none focus:border-accent dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-        placeholder="description"
-      />
-      <div className="mt-3 flex items-center justify-between text-sm text-slate-600 dark:text-slate-400">
-        <span>{description.length} chars</span>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {(active?.hashtags ?? []).map((tag) => (
-          <span className="border border-lane px-2 py-1 text-xs dark:border-slate-700" key={tag}>
-            {tag}
-          </span>
-        ))}
-      </div>
 
       <ChampionDetectionPanel detectionDebug={detectionDebug} />
     </section>
@@ -120,8 +92,8 @@ function DetectionList({ detections }: { detections: DetectionDebugResult[] }) {
           className={`border px-2 py-1 text-xs ${teamClass(detection.team)}`}
           key={`${detection.champion}-${detection.team}-${detection.confidence}-${detection.box.x1}-${detection.box.y1}`}
         >
-          {detection.champion} · {detection.team} · {(detection.confidence * 100).toFixed(0)}%
-          {detection.uncertain ? " · uncertain" : ""}
+          {detection.champion} - {detection.team} - {(detection.confidence * 100).toFixed(0)}%
+          {detection.uncertain ? " - uncertain" : ""}
         </span>
       ))}
     </div>

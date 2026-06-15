@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
-import { CaptionEditor } from "./CaptionEditor";
+import { OutputPanel } from "./OutputPanel";
 import { JobDashboard } from "./JobDashboard";
 import type { JobRecord } from "./types";
 
@@ -20,7 +20,7 @@ function App() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4">
           <div>
             <h1 className="text-xl font-semibold tracking-normal">LoL Clip Pipeline</h1>
-            <p className="text-sm text-slate-600 dark:text-slate-400">Fight detection, adaptive 3:4 crop, and descriptions.</p>
+            <p className="text-sm text-slate-600 dark:text-slate-400">Fight detection and adaptive 3:4 crop.</p>
           </div>
           <button
             className="border border-lane px-3 py-2 text-sm font-semibold text-slate-700 hover:border-accent dark:border-slate-700 dark:text-slate-200 dark:hover:border-accent"
@@ -36,7 +36,7 @@ function App() {
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-5 py-5 lg:grid-cols-[360px_1fr]">
         <JobDashboard onSelectJob={setSelectedJob} selectedJob={selectedJob} />
         <section className="grid min-w-0 gap-4">
-          <CaptionEditor job={selectedJob} />
+          <OutputPanel job={selectedJob} />
         </section>
       </div>
     </main>
