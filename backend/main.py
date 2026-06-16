@@ -5,17 +5,20 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config, models
 from .logging_config import setup_logging
 from .pipeline import ClipPipeline
+from .tiktok import TikTokError, TikTokPostOptions
+from . import tiktok
 from .trainer import TrainingCoordinator
 
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +48,19 @@ class TrainRequest(BaseModel):
     batch_size: Optional[int] = None
 
 
+class TikTokPostRequest(BaseModel):
+    mode: Literal["inbox", "direct"] = "inbox"
+    title: str = ""
+    privacy_level: str = "SELF_ONLY"
+    disable_duet: bool = False
+    disable_comment: bool = False
+    disable_stitch: bool = False
+    video_cover_timestamp_ms: int = 1000
+    brand_content_toggle: bool = False
+    brand_organic_toggle: bool = False
+    is_aigc: bool = False
+
+
 def _normalize_source_path(value: object) -> Path:
     raw = str(value or "").strip()
     quote_pairs = {('"', '"'), ("'", "'")}
@@ -67,6 +83,73 @@ async def startup() -> None:
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/tiktok/status")
+async def tiktok_status() -> dict:
+    return await tiktok.connection_status(config.DB_PATH)
+
+
+@app.get("/tiktok/auth")
+async def tiktok_auth(mode: Literal["inbox", "direct"] = "inbox") -> RedirectResponse:
+    try:
+        url = await tiktok.build_authorization_url(config.DB_PATH, mode)
+    except TikTokError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return RedirectResponse(url)
+
+
+@app.get("/tiktok/callback")
+async def tiktok_callback(code: str = "", state: str = "", error: str = "") -> RedirectResponse:
+    if error:
+        return RedirectResponse(f"{config.TIKTOK_AUTH_SUCCESS_URL}?{urlencode({'tiktok': 'error', 'detail': error})}")
+    try:
+        await tiktok.exchange_code(config.DB_PATH, code, state)
+    except TikTokError as exc:
+        return RedirectResponse(f"{config.TIKTOK_AUTH_SUCCESS_URL}?{urlencode({'tiktok': 'error', 'detail': str(exc)})}")
+    return RedirectResponse(f"{config.TIKTOK_AUTH_SUCCESS_URL}?{urlencode({'tiktok': 'connected'})}")
+
+
+@app.post("/tiktok/disconnect")
+async def tiktok_disconnect() -> dict:
+    await tiktok.disconnect(config.DB_PATH)
+    return {"connected": False}
+
+
+@app.get("/tiktok/creator-info")
+async def tiktok_creator_info() -> dict:
+    try:
+        return await tiktok.query_creator_info(config.DB_PATH)
+    except TikTokError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/tiktok/jobs/{job_id}/publish")
+async def tiktok_publish_job(job_id: str, req: TikTokPostRequest) -> dict:
+    job = await models.get_job(config.DB_PATH, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "complete" or not job.get("output_path"):
+        raise HTTPException(status_code=422, detail="Job must be complete before it can be sent to TikTok")
+
+    try:
+        request_payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+        return await tiktok.publish_video(
+            config.DB_PATH,
+            job_id,
+            Path(str(job["output_path"])),
+            TikTokPostOptions(**request_payload),
+        )
+    except TikTokError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/tiktok/publish/{publish_id}/status")
+async def tiktok_publish_status(publish_id: str) -> dict:
+    try:
+        return await tiktok.fetch_publish_status(config.DB_PATH, publish_id)
+    except TikTokError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/jobs")
@@ -156,4 +239,3 @@ async def train_stream() -> StreamingResponse:
             yield f"data: {json.dumps(metric)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
-

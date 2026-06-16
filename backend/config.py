@@ -5,6 +5,25 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+
+def _load_local_env(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        # Real environment variables win, so a one-off PowerShell override can
+        # still take precedence over values saved in the local .env file.
+        os.environ.setdefault(key, value)
+
+
+_load_local_env(PROJECT_ROOT / ".env")
+
+
 MINIMAP_ICONS_DIR = PROJECT_ROOT / "data" / "minimap_icons"
 MANIFEST_PATH = MINIMAP_ICONS_DIR / "champions_manifest.json"
 
@@ -101,3 +120,10 @@ TEMP_DIR = APPDATA_DIR / "temp"
 LOG_DIR = APPDATA_DIR / "logs"
 OUTPUT_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "LoLClipApp"
 DB_PATH = APPDATA_DIR / "lol_clip_app.sqlite3"
+
+TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "").strip()
+TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET", "").strip()
+TIKTOK_REDIRECT_URI = os.environ.get("TIKTOK_REDIRECT_URI", "http://127.0.0.1:8000/tiktok/callback").strip()
+TIKTOK_AUTH_SUCCESS_URL = os.environ.get("TIKTOK_AUTH_SUCCESS_URL", "http://127.0.0.1:5173").strip()
+TIKTOK_DEFAULT_SCOPES = "user.info.basic,video.upload"
+TIKTOK_DIRECT_SCOPES = "user.info.basic,video.publish"

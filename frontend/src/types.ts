@@ -22,6 +22,15 @@ export type TrainingMetric = {
   accuracy?: number;
 };
 
+export type TikTokStatus = {
+  configured: boolean;
+  connected: boolean;
+  open_id?: string | null;
+  scope?: string;
+  expires_at?: number | null;
+  refresh_expires_at?: number | null;
+};
+
 export type DetectionDebug = {
   summary?: {
     player?: string;

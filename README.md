@@ -10,12 +10,13 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Detects player/enemy context from YOLO minimap champion detections, HUD portraits, health bars, and optional full-frame YOLO classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
+- Can send completed clips to TikTok through the Content Posting API after TikTok OAuth connection.
 - Stores job state, progress, flags, output paths, and detection debug data in SQLite.
 
 ## Current Limitations
 
 - Champion recognition now uses the YOLOv8 minimap champion detector weights only for minimap champion detection.
-- Social publishing is not wired into the current app; it focuses on local clip generation and detection review.
+- TikTok direct posting requires TikTok app review and the `video.publish` scope. Upload-to-inbox with `video.upload` is the recommended first review path.
 
 ## Local YOLO Participant Classification
 
@@ -48,16 +49,32 @@ $env:LOL_CLIP_MINIMAP_YOLO_DEVICE = "0"
 
 If the minimap YOLO model cannot load or produces no detections for a frame, that frame contributes no minimap champion detections. The app no longer falls back to the older Hough-circle plus icon/template detector for minimap champion detection.
 
-## Future Social Integration
+## TikTok Posting
 
-TikTok and Instagram publishing are intentionally not wired into the current app. They should be revisited after clip quality and champion detection are stable.
+TikTok integration uses Login Kit plus the Content Posting API:
 
-Future work should include:
+- `video.upload`: sends the completed MP4 to the creator's TikTok inbox so they can finish editing/posting in TikTok.
+- `video.publish`: initializes Direct Post for the completed MP4. TikTok requires app approval for this scope, and unaudited clients may be limited to private visibility.
 
-- TikTok OAuth account connection.
-- TikTok draft upload or direct post.
-- Instagram/Reels publishing once a public video URL flow is available.
-- Safe token storage, refresh handling, and clear publishing status in the dashboard.
+Set TikTok credentials before starting the backend. The easiest local setup is to create a `.env` file in the project root:
+
+```env
+TIKTOK_CLIENT_KEY=...
+TIKTOK_CLIENT_SECRET=...
+TIKTOK_REDIRECT_URI=https://your-domain.example/tiktok/callback
+TIKTOK_AUTH_SUCCESS_URL=https://your-domain.example
+```
+
+`.env` and `.env.*` are ignored by Git. Values set directly in PowerShell still override `.env` for that session.
+
+For local development, the defaults are:
+
+```text
+TIKTOK_REDIRECT_URI=http://127.0.0.1:8000/tiktok/callback
+TIKTOK_AUTH_SUCCESS_URL=http://127.0.0.1:5173
+```
+
+TikTok's production web Login Kit requires registered `https` redirect URIs. Use the dashboard's TikTok section on a completed job to connect an account, upload to inbox, or start Direct Post.
 
 ## Fight Detection And VideoMAE
 
@@ -118,6 +135,7 @@ Useful follow-up work:
 - PyTorch for VideoMAE inference/training and Ultralytics YOLO. It is intentionally not pinned in `requirements.txt`; install a CPU or CUDA build appropriate for your machine.
 - Optional: CUDA-enabled PyTorch for faster VideoMAE training.
 - Optional: `LOL_CLIP_YOLO_WEIGHTS` for local YOLO participant classification.
+- Optional: TikTok developer credentials for Upload/Direct Post.
 
 ## Included Large Files
 
@@ -210,7 +228,7 @@ Do not commit real API keys. Local environment files are ignored by Git:
 - `.env`
 - `.env.*`
 
-Use `.env.example` as a template for local model settings.
+Use `.env.example` as a template for local model and TikTok settings.
 
 ## Useful Commands
 
@@ -222,7 +240,7 @@ Run backend tests:
 
 ## Project Layout
 
-- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, and training coordinator.
+- `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, TikTok posting, and training coordinator.
 - `frontend/`: React/Vite dashboard.
 - `data/minimap_icons/`: champion icon source data used by HUD portrait matching.
 - `checkpoints/`: model checkpoints tracked through Git LFS.

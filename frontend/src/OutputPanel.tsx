@@ -1,8 +1,57 @@
-import type { DetectionDebug, DetectionDebugResult, JobRecord } from "./types";
+import React from "react";
+import type { DetectionDebug, DetectionDebugResult, JobRecord, TikTokStatus } from "./types";
 
 export function OutputPanel({ job }: { job: JobRecord | null }) {
   const detectionDebug = safeJson<DetectionDebug>(job?.detection_debug, {});
   const outputUrl = outputUrlFromPath(job?.output_path);
+  const [tiktokStatus, setTikTokStatus] = React.useState<TikTokStatus | null>(null);
+  const [mode, setMode] = React.useState<"inbox" | "direct">("inbox");
+  const [title, setTitle] = React.useState("");
+  const [privacyLevel, setPrivacyLevel] = React.useState("SELF_ONLY");
+  const [disableComment, setDisableComment] = React.useState(false);
+  const [disableDuet, setDisableDuet] = React.useState(false);
+  const [disableStitch, setDisableStitch] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+
+  React.useEffect(() => {
+    void refreshTikTokStatus();
+  }, []);
+
+  async function refreshTikTokStatus() {
+    const status = await fetch("/tiktok/status").then((response) => response.json());
+    setTikTokStatus(status);
+  }
+
+  async function publishToTikTok() {
+    if (!job?.id) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/tiktok/jobs/${job.id}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          title,
+          privacy_level: privacyLevel,
+          disable_comment: disableComment,
+          disable_duet: disableDuet,
+          disable_stitch: disableStitch,
+          // Clips are gameplay footage generated from recorded video, not AI-generated media.
+          is_aigc: false
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(payload.detail ?? "TikTok upload failed");
+        return;
+      }
+      setMessage(mode === "inbox" ? `Sent to TikTok inbox: ${payload.publish_id}` : `Direct post initialized: ${payload.publish_id}`);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <section className="border border-lane bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -27,7 +76,150 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         </div>
       )}
 
+      <TikTokPanel
+        busy={busy}
+        connected={Boolean(tiktokStatus?.connected)}
+        configured={Boolean(tiktokStatus?.configured)}
+        scope={tiktokStatus?.scope ?? ""}
+        disableComment={disableComment}
+        disableDuet={disableDuet}
+        disableStitch={disableStitch}
+        hasOutput={Boolean(job?.status === "complete" && outputUrl)}
+        message={message}
+        mode={mode}
+        onConnect={() => {
+          window.location.href = `/tiktok/auth?mode=${mode}`;
+        }}
+        onDisconnect={async () => {
+          await fetch("/tiktok/disconnect", { method: "POST" });
+          await refreshTikTokStatus();
+        }}
+        onPublish={() => void publishToTikTok()}
+        privacyLevel={privacyLevel}
+        setDisableComment={setDisableComment}
+        setDisableDuet={setDisableDuet}
+        setDisableStitch={setDisableStitch}
+        setMode={setMode}
+        setPrivacyLevel={setPrivacyLevel}
+        setTitle={setTitle}
+        title={title}
+      />
+
       <ChampionDetectionPanel detectionDebug={detectionDebug} />
+    </section>
+  );
+}
+
+function TikTokPanel({
+  busy,
+  connected,
+  configured,
+  disableComment,
+  disableDuet,
+  disableStitch,
+  hasOutput,
+  message,
+  mode,
+  onConnect,
+  onDisconnect,
+  onPublish,
+  privacyLevel,
+  setDisableComment,
+  setDisableDuet,
+  setDisableStitch,
+  setMode,
+  setPrivacyLevel,
+  setTitle,
+  scope,
+  title
+}: {
+  busy: boolean;
+  connected: boolean;
+  configured: boolean;
+  disableComment: boolean;
+  disableDuet: boolean;
+  disableStitch: boolean;
+  hasOutput: boolean;
+  message: string;
+  mode: "inbox" | "direct";
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onPublish: () => void;
+  privacyLevel: string;
+  setDisableComment: (value: boolean) => void;
+  setDisableDuet: (value: boolean) => void;
+  setDisableStitch: (value: boolean) => void;
+  setMode: (value: "inbox" | "direct") => void;
+  setPrivacyLevel: (value: string) => void;
+  setTitle: (value: string) => void;
+  scope: string;
+  title: string;
+}) {
+  const requiredScope = mode === "direct" ? "video.publish" : "video.upload";
+  const hasRequiredScope = scope.split(",").map((item) => item.trim()).includes(requiredScope);
+  return (
+    <section className="mt-6 border-t border-lane pt-5 dark:border-slate-800">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-base font-semibold">TikTok</h2>
+        <div className="flex flex-wrap gap-2 text-sm">
+          {connected ? (
+            <button className="border border-lane px-3 py-1.5 font-semibold dark:border-slate-700" onClick={onDisconnect} type="button">
+              Disconnect
+            </button>
+          ) : (
+            <button className="bg-accent px-3 py-1.5 font-semibold text-white disabled:opacity-50" disabled={!configured} onClick={onConnect} type="button">
+              Connect TikTok
+            </button>
+          )}
+          {connected && !hasRequiredScope ? (
+            <button className="border border-lane px-3 py-1.5 font-semibold dark:border-slate-700" onClick={onConnect} type="button">
+              Authorize {mode === "direct" ? "Direct Post" : "Inbox Upload"}
+            </button>
+          ) : null}
+          <button className="bg-accent px-3 py-1.5 font-semibold text-white disabled:opacity-50" disabled={!configured || !connected || !hasRequiredScope || !hasOutput || busy} onClick={onPublish} type="button">
+            {busy ? "Sending" : mode === "inbox" ? "Send to Inbox" : "Direct Post"}
+          </button>
+        </div>
+      </div>
+
+      {!configured ? <p className="mt-3 text-sm text-danger">Set TikTok client key, secret, and redirect URI before connecting.</p> : null}
+
+      <div className="mt-4 grid gap-3 text-sm">
+        <label className="grid gap-1 font-medium">
+          Mode
+          <select className="border border-lane bg-white px-3 py-2 outline-none dark:border-slate-700 dark:bg-slate-950" value={mode} onChange={(event) => setMode(event.target.value as "inbox" | "direct")}>
+            <option value="inbox">Upload to TikTok inbox</option>
+            <option value="direct">Direct Post</option>
+          </select>
+        </label>
+
+        {mode === "direct" ? (
+          <div className="grid gap-3">
+            <label className="grid gap-1 font-medium">
+              Post title
+              <input className="border border-lane bg-white px-3 py-2 outline-none dark:border-slate-700 dark:bg-slate-950" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional TikTok caption/title" />
+            </label>
+            <label className="grid gap-1 font-medium">
+              Privacy
+              <select className="border border-lane bg-white px-3 py-2 outline-none dark:border-slate-700 dark:bg-slate-950" value={privacyLevel} onChange={(event) => setPrivacyLevel(event.target.value)}>
+                <option value="SELF_ONLY">Self only</option>
+                <option value="MUTUAL_FOLLOW_FRIENDS">Mutual friends</option>
+                <option value="FOLLOWER_OF_CREATOR">Followers</option>
+                <option value="PUBLIC_TO_EVERYONE">Public</option>
+              </select>
+            </label>
+            <div className="flex flex-wrap gap-3 text-slate-700 dark:text-slate-300">
+              <label className="flex items-center gap-2"><input checked={disableComment} onChange={(event) => setDisableComment(event.target.checked)} type="checkbox" /> Comments off</label>
+              <label className="flex items-center gap-2"><input checked={disableDuet} onChange={(event) => setDisableDuet(event.target.checked)} type="checkbox" /> Duets off</label>
+              <label className="flex items-center gap-2"><input checked={disableStitch} onChange={(event) => setDisableStitch(event.target.checked)} type="checkbox" /> Stitches off</label>
+            </div>
+          </div>
+        ) : (
+          <p className="text-slate-600 dark:text-slate-400">Inbox upload sends the clip to TikTok so the creator can finish editing and posting there.</p>
+        )}
+      </div>
+
+      {message ? <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">{message}</p> : null}
     </section>
   );
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,34 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS tiktok_tokens (
+    platform TEXT PRIMARY KEY,
+    open_id TEXT,
+    scope TEXT,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NOT NULL,
+    token_type TEXT DEFAULT 'Bearer',
+    expires_at INTEGER NOT NULL,
+    refresh_expires_at INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tiktok_oauth_states (
+    state TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tiktok_publish_jobs (
+    publish_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'initialized',
+    response TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -62,6 +91,86 @@ async def _ensure_job_columns(db: aiosqlite.Connection) -> None:
         await db.execute("ALTER TABLE jobs ADD COLUMN status_message TEXT DEFAULT ''")
     if "detection_debug" not in columns:
         await db.execute("ALTER TABLE jobs ADD COLUMN detection_debug TEXT NOT NULL DEFAULT '{}'")
+
+
+async def save_tiktok_oauth_state(db_path: Path, state: str) -> None:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO tiktok_oauth_states (state, created_at) VALUES (?, ?)",
+            (state, int(time.time())),
+        )
+        await db.commit()
+
+
+async def consume_tiktok_oauth_state(db_path: Path, state: str, max_age_sec: int = 600) -> bool:
+    await init_db(db_path)
+    now = int(time.time())
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("SELECT created_at FROM tiktok_oauth_states WHERE state=?", (state,))
+        row = await cursor.fetchone()
+        await db.execute("DELETE FROM tiktok_oauth_states WHERE state=?", (state,))
+        await db.commit()
+    if row is None:
+        return False
+    return now - int(row[0]) <= max_age_sec
+
+
+async def save_tiktok_token(db_path: Path, token: dict[str, Any]) -> None:
+    await init_db(db_path)
+    now = int(time.time())
+    expires_at = now + int(token.get("expires_in", 0))
+    refresh_expires_at = now + int(token.get("refresh_expires_in", 0)) if token.get("refresh_expires_in") else None
+    async with aiosqlite.connect(db_path) as db:
+        # This is local desktop storage. Encrypt or move these tokens to a managed
+        # secret store before exposing the app as a hosted multi-user service.
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO tiktok_tokens
+                (platform, open_id, scope, access_token, refresh_token, token_type, expires_at, refresh_expires_at, updated_at)
+            VALUES ('tiktok', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                token.get("open_id"),
+                token.get("scope", ""),
+                token["access_token"],
+                token["refresh_token"],
+                token.get("token_type", "Bearer"),
+                expires_at,
+                refresh_expires_at,
+            ),
+        )
+        await db.commit()
+
+
+async def get_tiktok_token(db_path: Path) -> dict[str, Any] | None:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM tiktok_tokens WHERE platform='tiktok'")
+        row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def delete_tiktok_token(db_path: Path) -> None:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("DELETE FROM tiktok_tokens WHERE platform='tiktok'")
+        await db.commit()
+
+
+async def save_tiktok_publish_job(db_path: Path, publish_id: str, job_id: str, mode: str, response: dict[str, Any]) -> None:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO tiktok_publish_jobs
+                (publish_id, job_id, mode, status, response, updated_at)
+            VALUES (?, ?, ?, 'initialized', ?, CURRENT_TIMESTAMP)
+            """,
+            (publish_id, job_id, mode, json.dumps(response)),
+        )
+        await db.commit()
 
 
 async def create_job(db_path: Path, job_id: str, source_path: Path | str) -> None:
