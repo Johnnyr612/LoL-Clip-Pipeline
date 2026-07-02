@@ -7,7 +7,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Accepts an existing `.mp4` clip path through the dashboard or `/process` API. The backend also has a `/jobs` upload endpoint, but the current dashboard uses local paths.
 - Extracts full-frame and minimap frames with OpenCV.
 - Detects likely fight timing with a fine-tuned VideoMAE checkpoint, falling back to a heuristic score when the checkpoint is missing or inference fails.
-- Detects player/enemy context from YOLO minimap champion detections, HUD portraits, health bars, and optional full-frame YOLO classification.
+- Detects player/enemy context from YOLO minimap champion detections, temporal team-color tracking, HUD portraits, health bars, and optional full-frame YOLO classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
 - Can send completed clips to TikTok through the Content Posting API after TikTok OAuth connection.
@@ -48,6 +48,19 @@ $env:LOL_CLIP_MINIMAP_YOLO_DEVICE = "0"
 ```
 
 If the minimap YOLO model cannot load or produces no detections for a frame, that frame contributes no minimap champion detections. The app no longer falls back to the older Hough-circle plus icon/template detector for minimap champion detection.
+
+## Team Color Tracking
+
+Champion identity and team color are handled as separate signals. YOLO is used to identify champion icons, while `backend/team_tracker.py` classifies team color from the thin outer ring around each minimap portrait.
+
+The tracker is intentionally conservative:
+
+- Samples only the icon border annulus so champion portrait art does not pollute the team-color decision.
+- Skips border sampling for overlapping detections because clustered champion icons can contaminate each other's rings.
+- Votes across all sampled minimap frames because a champion's team does not change mid-game.
+- Finalizes a team only after enough clean votes meet the confidence threshold. Otherwise the champion is marked as needing review instead of guessing.
+
+The pipeline stores the tracker summary in each job's `detection_debug.team_tracker` payload. This includes the finalized team when available, confidence, vote counts, per-team tallies, and a `needs_review` flag.
 
 ## TikTok Posting
 
@@ -114,7 +127,7 @@ This branch does not include a `backend/prepare_negatives.py` helper. If that wo
 
 ## Champion Detection Notes
 
-The minimap detector now uses the supervised YOLOv8 checkpoint as the champion detector. The icon assets are still used by HUD portrait matching:
+The minimap detector now uses the supervised YOLOv8 checkpoint as the champion detector. Team color is refined by temporal border-ring voting in `backend/team_tracker.py`, and the finalized team can override noisy per-frame team readings before participant aggregation. The icon assets are still used by HUD portrait matching:
 
 - `data/minimap_icons/images`
 - `data/minimap_icons/champions_manifest.json`
@@ -124,7 +137,7 @@ Useful follow-up work:
 - Keep Riot/Data Dragon assets current so new champions are not missing.
 - Use a match champion whitelist when available, ideally the 10 champions from Riot's local Live Client Data API during recording.
 - Keep evaluating YOLO detections against real failed clips and retrain on hard examples.
-- Use temporal voting across frames instead of trusting a single crop.
+- Continue evaluating team-color tracker summaries from `detection_debug.team_tracker` on hard clips, especially crowded fights where many detections are skipped.
 
 ## Requirements
 
@@ -241,6 +254,7 @@ Run backend tests:
 ## Project Layout
 
 - `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, TikTok posting, and training coordinator.
+- `backend/team_tracker.py`: conservative minimap team-color tracker based on border-ring sampling, cluster skipping, and temporal voting.
 - `frontend/`: React/Vite dashboard.
 - `data/minimap_icons/`: champion icon source data used by HUD portrait matching.
 - `checkpoints/`: model checkpoints tracked through Git LFS.
