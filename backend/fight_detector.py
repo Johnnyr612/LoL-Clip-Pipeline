@@ -46,6 +46,32 @@ def merge_highlights(windows: Sequence[tuple[float, float]], gap: float = config
     return merged
 
 
+def _walk_boundary(
+    scores: Sequence[float],
+    peak_idx: int,
+    direction: int,
+    threshold: float,
+    gap_tolerance: int,
+) -> int:
+    """Walk outward from the score peak, tolerating short sub-threshold dips
+    so a mid-fight lull doesn't truncate the boundary."""
+    last_good = peak_idx
+    gap = 0
+    idx = peak_idx
+    while True:
+        idx += direction
+        if idx < 0 or idx >= len(scores):
+            break
+        if scores[idx] >= threshold:
+            last_good = idx
+            gap = 0
+        else:
+            gap += 1
+            if gap > gap_tolerance:
+                break
+    return last_good
+
+
 def boundaries_from_scores(scores: Sequence[float], source_duration: float) -> tuple[float, float, list[str]]:
     flags: list[str] = []
     if not scores or max(scores) < config.FIGHT_CONFIDENCE_THRESHOLD:
@@ -57,23 +83,26 @@ def boundaries_from_scores(scores: Sequence[float], source_duration: float) -> t
         return start, end, ["low_confidence"]
 
     peak_idx = int(np.argmax(np.array(scores)))
-    left = peak_idx
-    right = peak_idx
-    while left > 0 and scores[left - 1] >= config.FIGHT_CONFIDENCE_THRESHOLD:
-        left -= 1
-    while right + 1 < len(scores) and scores[right + 1] >= config.FIGHT_CONFIDENCE_THRESHOLD:
-        right += 1
-    fight_start = float(left)
+    # Walk left with a lower "onset" threshold: window scores ramp up as the
+    # fight fills the 16s window, so the opening seconds sit below the main
+    # confidence threshold even when the fight has clearly begun.
+    left = _walk_boundary(
+        scores, peak_idx, -1, config.FIGHT_ONSET_THRESHOLD, config.FIGHT_BOUNDARY_GAP_TOLERANCE_SEC
+    )
+    right = _walk_boundary(
+        scores, peak_idx, 1, config.FIGHT_CONFIDENCE_THRESHOLD, config.FIGHT_BOUNDARY_GAP_TOLERANCE_SEC
+    )
+    # Window index s scores the interval [s, s+16), so detection lags the true
+    # engagement. Pull the start back to capture the approach/poke phase.
+    fight_start = max(0.0, float(left) - config.FIGHT_START_PREROLL_SEC)
     fight_end = float(right + 16.0)
-    duration = fight_end - fight_start
-    if duration < config.FIGHT_MIN_DURATION:
-        pad = (config.FIGHT_MIN_DURATION - duration) / 2
-        fight_start -= pad
-        fight_end += pad
+    if fight_end - fight_start < config.FIGHT_MIN_DURATION:
+        fight_end = fight_start + config.FIGHT_MIN_DURATION
     if fight_end - fight_start > config.FIGHT_MAX_DURATION:
-        center = (fight_start + fight_end) / 2
-        fight_start = center - config.FIGHT_MAX_DURATION / 2
-        fight_end = center + config.FIGHT_MAX_DURATION / 2
+        # Never sacrifice the fight opening: cap by trimming the tail. The
+        # kill/death detector extends the end again later if needed.
+        fight_end = fight_start + config.FIGHT_MAX_DURATION
+        flags.append("fight_capped_at_max_duration")
     return max(0.0, fight_start), min(source_duration, fight_end), flags
 
 
@@ -106,10 +135,9 @@ def apply_dialog_extension(
     clip_end = min(source_duration, clip_end)
 
     if clip_end - clip_start > config.MAX_CLIP_DURATION:
-        fight_center = (fight_start + fight_end) / 2
-        clip_start = max(0.0, fight_center - config.MAX_CLIP_DURATION / 2)
+        # Keep the fight opening intact and trim the tail instead of
+        # recentering, which used to push the start past the fight onset.
         clip_end = min(source_duration, clip_start + config.MAX_CLIP_DURATION)
-        clip_start = max(0.0, clip_end - config.MAX_CLIP_DURATION)
 
     return TrimResult(
         clip_start=round(clip_start, 3),
@@ -139,7 +167,11 @@ def finish_on_kill_or_death(
         min_event_time=min_clip_end,
     )
     if event_time is None:
-        clip_end = max(trim.clip_end, target_clip_end)
+        # Without a confirmed kill/death, trust the detected fight end instead
+        # of stretching every clip to a fixed target length. Conservative mode
+        # restores the old always-extend behavior.
+        fallback_end = target_clip_end if config.CONSERVATIVE_FULL_FIGHT_TRIM else min_clip_end
+        clip_end = max(trim.clip_end, fallback_end)
         clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
         clip_end = min(clip_end, max_clip_end)
         return TrimResult(
@@ -174,18 +206,24 @@ def finish_on_kill_or_death(
 def add_output_context(trim: TrimResult, source_duration: float) -> TrimResult:
     clip_start = max(0.0, trim.clip_start - config.OUTPUT_CONTEXT_PADDING_SEC)
     clip_end = min(source_duration, trim.clip_end + config.OUTPUT_CONTEXT_PADDING_SEC)
+    flags = [*trim.flags, "output_context_padding_applied"]
+    # Hard cap on dead air before the fight: dialog extension, preroll, and
+    # padding combined may not push the start further back than this.
+    earliest_start = max(0.0, trim.fight_start - config.MAX_PRE_FIGHT_LEAD_SEC)
+    if clip_start < earliest_start:
+        clip_start = earliest_start
+        flags.append("pre_fight_lead_capped")
     if clip_end - clip_start > config.MAX_CLIP_DURATION:
         overflow = (clip_end - clip_start) - config.MAX_CLIP_DURATION
         front_room = trim.clip_start - clip_start
         back_room = clip_end - trim.clip_end
-        trim_front = min(front_room, overflow / 2)
-        trim_back = min(back_room, overflow - trim_front)
+        # Trim the tail padding first; only eat into the front lead-in if
+        # unavoidable, so the fight opening keeps its context.
+        trim_back = min(back_room, overflow)
+        trim_front = min(front_room, overflow - trim_back)
         remaining = overflow - trim_front - trim_back
         if remaining > 0:
-            if front_room - trim_front > back_room - trim_back:
-                trim_front += remaining
-            else:
-                trim_back += remaining
+            trim_back += remaining
         clip_start += trim_front
         clip_end -= trim_back
     return TrimResult(
@@ -195,7 +233,7 @@ def add_output_context(trim: TrimResult, source_duration: float) -> TrimResult:
         fight_end=trim.fight_end,
         fight_duration=trim.fight_duration,
         dialog_segments=trim.dialog_segments,
-        flags=[*trim.flags, "output_context_padding_applied"],
+        flags=flags,
     )
 
 
@@ -224,15 +262,25 @@ def estimate_visible_enemy_count(
     return int(max(1, min(5, round(float(np.median(counts))))))
 
 
+def _champion_bars(bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """Keep only bars wide enough to be champion health bars. Minion and ward
+    bars are narrower and must not count as fight participants."""
+    return [bar for bar in bars if bar[2] >= config.COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH]
+
+
 def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[float | None], list[float | None]]:
     player_positions: list[float | None] = []
     threat_positions: list[float | None] = []
     for frame in full_frames:
         red_bars, green_bars = _combat_health_bars(frame)
+        red_bars = _champion_bars(red_bars)
         player_bar = _select_player_health_bar(green_bars)
         if player_bar is None:
+            # Without a confirmed player bar there is no reliable anchor, so
+            # do not let stray red bars (minion waves, jungle camps) pull the
+            # crop toward them. Report no threat instead.
             player_positions.append(None)
-            threat_positions.append(_mean_bar_center_x(red_bars))
+            threat_positions.append(None)
             continue
         x, _, width, _ = player_bar
         player_positions.append(float(x + (width - 1) / 2))
@@ -417,19 +465,40 @@ def _filter_side_hud_bars(
 def _select_player_health_bar(green_bars: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int] | None:
     if not green_bars:
         return None
-    return max(green_bars, key=lambda box: (box[2], -box[1]))
+    # The camera follows the recording player, so their health bar sits near
+    # the middle of the screen (slightly above center, floating over the
+    # champion). Prefer central bars; a wide green bar at the screen edge is
+    # almost always allied minions, a ward, or a plant - not the player.
+    frame_w, frame_h = 1920.0, 1080.0
+    champion_greens = _champion_bars(green_bars)
+    pool_source = champion_greens or green_bars
+    central = [
+        bar
+        for bar in pool_source
+        if abs((bar[0] + bar[2] / 2) - frame_w / 2) <= frame_w * 0.30
+    ]
+    pool = central or pool_source
+
+    def selection_key(bar: tuple[int, int, int, int]) -> float:
+        cx = bar[0] + bar[2] / 2
+        cy = bar[1] + bar[3] / 2
+        distance = ((cx - frame_w * 0.5) ** 2 + (cy - frame_h * 0.42) ** 2) ** 0.5
+        return distance - bar[2] * 1.5  # closer to center wins; width breaks ties
+
+    return min(pool, key=selection_key)
 
 
 def _enemy_bars_near_player(
     red_bars: list[tuple[int, int, int, int]],
     player_bar: tuple[int, int, int, int] | None,
 ) -> list[tuple[int, int, int, int]]:
+    champion_reds = _champion_bars(red_bars)
     if player_bar is None:
-        return red_bars
+        return champion_reds
     px = player_bar[0] + player_bar[2] / 2
     py = player_bar[1] + player_bar[3] / 2
     nearby = []
-    for bar in red_bars:
+    for bar in champion_reds:
         bx = bar[0] + bar[2] / 2
         by = bar[1] + bar[3] / 2
         if abs(bx - px) <= 420 and abs(by - py) <= 260:

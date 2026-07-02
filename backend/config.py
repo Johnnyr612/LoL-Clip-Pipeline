@@ -61,20 +61,45 @@ HUD_PLAYER_OVERRIDE_VISION_CONFIRM = 0.92
 ICON_PHASH_CONFIRM_MAX_DISTANCE = 22
 ICON_PHASH_SUPPORT_MAX_DISTANCE = 24
 ICON_PHASH_MIN_GRAY_SCORE = 0.25
-CONSERVATIVE_FULL_FIGHT_TRIM = os.environ.get("LOL_CLIP_CONSERVATIVE_FULL_FIGHT_TRIM", "1").strip() != "0"
+CONSERVATIVE_FULL_FIGHT_TRIM = os.environ.get("LOL_CLIP_CONSERVATIVE_FULL_FIGHT_TRIM", "0").strip() != "0"
 COMBAT_EVENT_SEARCH_AFTER_FIGHT_SEC = 40.0
-COMBAT_EVENT_END_PADDING_SEC = 5.0
+COMBAT_EVENT_END_PADDING_SEC = float(os.environ.get("LOL_CLIP_END_PADDING_SEC", "3.0"))
 COMBAT_EVENT_MIN_VISIBLE_ENEMY_FRAMES = 3
-COMBAT_EVENT_MISSING_FRAMES = 2
-COMBAT_EVENT_MIN_CLIP_DURATION_SEC = 42.0
-COMBAT_EVENT_TARGET_CLIP_DURATION_SEC = 52.0
-OUTPUT_CONTEXT_PADDING_SEC = 4.0
+# Enemy bars must be absent this many consecutive samples (~0.5s each) before
+# a kill is declared. Too low and an enemy stepping into fog mid-fight ends
+# the clip early.
+COMBAT_EVENT_MISSING_FRAMES = int(os.environ.get("LOL_CLIP_EVENT_MISSING_FRAMES", "4"))
+# Minimum clip length. Kills/deaths before this point are ignored as end
+# triggers, so keep it short enough that real fight endings can end the clip.
+COMBAT_EVENT_MIN_CLIP_DURATION_SEC = float(os.environ.get("LOL_CLIP_MIN_CLIP_SEC", "20.0"))
+# Fallback length when no kill/death is confirmed (and floor when
+# CONSERVATIVE_FULL_FIGHT_TRIM is enabled).
+COMBAT_EVENT_TARGET_CLIP_DURATION_SEC = float(os.environ.get("LOL_CLIP_TARGET_CLIP_SEC", "35.0"))
+OUTPUT_CONTEXT_PADDING_SEC = float(os.environ.get("LOL_CLIP_OUTPUT_PADDING_SEC", "1.5"))
 COMBAT_HEALTHBAR_MIN_WIDTH = 45
 COMBAT_HEALTHBAR_MAX_WIDTH = 170
+# Champion health bars are noticeably wider than minion bars at 1920x1080
+# (~105px vs ~60px). Bars narrower than this are treated as minions/wards and
+# excluded from fight scoring, kill detection, and camera threat direction.
+COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CHAMPION_BAR_MIN_WIDTH", "85"))
 COMBAT_HEALTHBAR_IGNORE_LEFT_X_PCT = 0.16
 COMBAT_HEALTHBAR_IGNORE_LEFT_Y_MAX_PCT = 0.72
 
 FIGHT_CONFIDENCE_THRESHOLD = 0.50
+# Lower threshold used only when walking LEFT from the score peak: the 16s
+# scoring windows ramp up gradually as the fight fills them, so the fight's
+# opening seconds score below the main threshold.
+FIGHT_ONSET_THRESHOLD = float(os.environ.get("LOL_CLIP_FIGHT_ONSET_THRESHOLD", "0.35"))
+# Allow this many consecutive sub-threshold seconds during the boundary walk
+# so a brief mid-fight lull doesn't cut the detected fight short.
+FIGHT_BOUNDARY_GAP_TOLERANCE_SEC = int(os.environ.get("LOL_CLIP_FIGHT_GAP_TOLERANCE", "3"))
+# Pull the detected fight start back by this many seconds to include the
+# approach/poke phase that windowed scoring inherently misses.
+FIGHT_START_PREROLL_SEC = float(os.environ.get("LOL_CLIP_FIGHT_START_PREROLL", "1.5"))
+# Hard cap on non-fight lead-in: the clip never starts more than this many
+# seconds before the detected fight start, no matter what dialog extension or
+# padding would otherwise add.
+MAX_PRE_FIGHT_LEAD_SEC = float(os.environ.get("LOL_CLIP_MAX_PRE_FIGHT_LEAD_SEC", "2.5"))
 FIGHT_MIN_DURATION = 4.0
 FIGHT_MAX_DURATION = 35.0
 FIGHT_MERGE_GAP_SEC = 1.5
@@ -90,8 +115,44 @@ PLAYER_SAFE_RIGHT_PX = 590
 PLAYER_CENTER_DEADZONE_PX = 45
 THREAT_FRAME_MARGIN_PX = 70
 MINIMAP_UI_AVOID_MARGIN_PX = 30
-MAX_CROP_KEYFRAMES = 6
+# Crop mode:
+#   "hybrid"   - default. Holds a steady shot, but eases toward the fight side
+#                when threats stay on one flank of the champion for a while.
+#                Best for locked camera: static feel + captures fight direction.
+#   "static"   - one fixed crop for the whole clip, zero movement.
+#   "adaptive" - continuously pans based on detected player/threat positions
+#                (for unlocked camera recordings).
+CROP_MODE = os.environ.get("LOL_CLIP_CROP_MODE", "hybrid").strip().lower()
+# Fixed crop x for static mode and the base position for hybrid mode. Default
+# centers the 810px crop in the 1920px frame, where a locked camera holds the
+# champion.
+STATIC_CROP_X = int(os.environ.get("LOL_CLIP_STATIC_CROP_X", str((1920 - 810) // 2)))
+# How the crop moves between positions:
+#   "cut" - default. Snaps instantly between held positions, like an editor's
+#           camera cut. No sliding.
+#   "pan" - eases between positions at a limited speed.
+CROP_TRANSITION = os.environ.get("LOL_CLIP_CROP_TRANSITION", "cut").strip().lower()
+# Hybrid mode: how far the crop shifts toward the fight side (px).
+HYBRID_OFFSET_PX = int(os.environ.get("LOL_CLIP_HYBRID_OFFSET_PX", "140"))
+# Hybrid mode: how far from the champion the threats must sit (px) before that
+# flank counts as the fight side.
+HYBRID_SIDE_TRIGGER_PX = int(os.environ.get("LOL_CLIP_HYBRID_SIDE_TRIGGER_PX", "170"))
+# Hybrid mode: how long threats must persist on one side before the camera
+# repositions, and before it recenters after they leave.
+HYBRID_HOLD_SEC = float(os.environ.get("LOL_CLIP_HYBRID_HOLD_SEC", "3.0"))
+# Hybrid mode: hard budget on view changes per clip. Once spent, the camera
+# holds its position for the remainder of the clip.
+HYBRID_MAX_VIEW_CHANGES = int(os.environ.get("LOL_CLIP_HYBRID_MAX_VIEW_CHANGES", "3"))
+# Hybrid mode: minimum seconds between consecutive view changes.
+HYBRID_MIN_CUT_SPACING_SEC = float(os.environ.get("LOL_CLIP_HYBRID_MIN_CUT_SPACING_SEC", "4.0"))
+
+MAX_CROP_KEYFRAMES = 61
 KEYFRAME_INTERVAL_SEC = 1.0
+MAX_PAN_SPEED_PX_PER_SEC = 240
+PAN_DEADBAND_PX = 24
+CROP_START_SEED_KEYFRAMES = 3
+PLAYER_SX_MEDIAN_WINDOW_SEC = 0.75
+CROP_EXPR_MAX_POINTS = 48
 LOW_FLOW_THRESHOLD = 500
 BLEND_1V1 = (0.92, 0.08, 0.0)
 BLEND_1VN = (0.90, 0.10, 0.0)

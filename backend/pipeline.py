@@ -25,6 +25,7 @@ from .fight_detector import (
 from .frame_io import FrameDecodeError, decode_video
 from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
 from .models import update_job_progress
+from .team_tracker import TeamTracker, clustered_indices, infer_team_from_border
 from .vision_classifier import VisionFightResult, classify_fight_participants
 
 
@@ -128,9 +129,19 @@ class ClipPipeline:
             detection_frames = bundle.minimap_frames[minimap_indices]
             detection_timestamps = bundle.timestamps_mini[minimap_indices]
             detections = []
+            team_tracker = TeamTracker()
             total_detection_frames = max(len(detection_frames), 1)
             for index, frame in enumerate(detection_frames):
-                detections.append(self.minimap_detector.detect_icons(frame))
+                frame_detections = self.minimap_detector.detect_icons(frame)
+                detections.append(frame_detections)
+                detection_boxes = [_detection_box(detection) for detection in frame_detections]
+                clustered = clustered_indices(detection_boxes)
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                for detection_index, detection in enumerate(frame_detections):
+                    if detection_index in clustered:
+                        continue
+                    team_vote, border_confidence = infer_team_from_border(frame_bgr, detection_boxes[detection_index])
+                    team_tracker.update(detection.champion_name, team_vote, border_confidence, detection.match_score)
                 if index and index % 15 == 0:
                     progress = 10 + int((index / total_detection_frames) * 70)
                     await update_job_progress(
@@ -140,6 +151,9 @@ class ClipPipeline:
                         min(progress, 80),
                         f"Scanning minimap frames {index}/{total_detection_frames}...",
                     )
+            team_tracker_summary = team_tracker.summary()
+            await models.update_job(db_path, job_id, detection_debug={"team_tracker": team_tracker_summary})
+            detections = _apply_tracked_teams(detections, team_tracker)
             player_positions = [self.minimap_detector.find_white_box(frame) for frame in bundle.minimap_frames]
             sampled_player_positions = [
                 _position_to_pixels(player_positions[int(i)], bundle.minimap_frames[int(i)].shape)
@@ -216,6 +230,7 @@ class ClipPipeline:
                 trim.clip_start,
                 trim.clip_end,
                 participants,
+                team_tracker_summary,
             )
             flags.extend(participants.flags)
             await update_job_progress(
@@ -347,6 +362,23 @@ def _normalize_enemy_positions(enemies: list[ChampionResult]) -> list[ChampionRe
     return normalized
 
 
+def _detection_box(detection) -> tuple[int, int, int, int]:
+    x, y = detection.circle_center
+    radius = int(detection.radius)
+    return (int(x - radius), int(y - radius), int(x + radius), int(y + radius))
+
+
+def _apply_tracked_teams(detections_per_frame: list[list], team_tracker: TeamTracker) -> list[list]:
+    tracked: list[list] = []
+    for frame_detections in detections_per_frame:
+        tracked_frame = []
+        for detection in frame_detections:
+            team, _confidence = team_tracker.get_team(detection.champion_name)
+            tracked_frame.append(replace(detection, team=team) if team is not None else detection)
+        tracked.append(tracked_frame)
+    return tracked
+
+
 def _write_detection_debug(
     job_id: str,
     frames: np.ndarray,
@@ -356,12 +388,13 @@ def _write_detection_debug(
     clip_start: float,
     clip_end: float,
     participants: FightParticipants,
+    team_tracker_summary: dict | None = None,
 ) -> dict:
     debug_dir = config.OUTPUT_DIR / "debug" / job_id
     debug_dir.mkdir(parents=True, exist_ok=True)
     frame_records: list[dict] = []
     if len(frames) == 0 or len(timestamps) == 0:
-        return _detection_debug_payload(participants, frame_records)
+        return _detection_debug_payload(participants, frame_records, team_tracker_summary)
 
     indexes = np.flatnonzero((timestamps >= clip_start) & (timestamps <= clip_end))
     if len(indexes) == 0:
@@ -388,10 +421,10 @@ def _write_detection_debug(
             }
         )
 
-    return _detection_debug_payload(participants, frame_records)
+    return _detection_debug_payload(participants, frame_records, team_tracker_summary)
 
 
-def _detection_debug_payload(participants: FightParticipants, frames: list[dict]) -> dict:
+def _detection_debug_payload(participants: FightParticipants, frames: list[dict], team_tracker_summary: dict | None = None) -> dict:
     return {
         "summary": {
             "player": participants.player.champion_name,
@@ -399,6 +432,7 @@ def _detection_debug_payload(participants: FightParticipants, frames: list[dict]
             "enemies": [enemy.champion_name for enemy in participants.enemies],
             "fight_type": participants.fight_type,
         },
+        "team_tracker": team_tracker_summary or {},
         "frames": frames,
         "notes": [
             "The white minimap camera box is treated as the recording/player anchor.",
