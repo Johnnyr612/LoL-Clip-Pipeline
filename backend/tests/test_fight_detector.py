@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from backend import config
+from backend.cropper import AdaptiveCropper
 from backend.fight_detector import (
     DialogSegment,
     FightDetector,
@@ -166,6 +167,85 @@ def test_estimate_combat_screen_x_positions_ignores_left_hud_bars():
     assert player_positions == [880.0]
     assert threat_positions == [1050.0]
 
+def test_minion_red_health_bars_do_not_count_as_visible_enemies():
+    frames = np.zeros((4, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(4, dtype=np.float32)
+    for idx in range(4):
+        cv2.rectangle(frames[idx], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frames[idx], (1000, 300), (1060, 307), (210, 30, 30), thickness=-1)
+        cv2.rectangle(frames[idx], (1120, 330), (1180, 337), (210, 30, 30), thickness=-1)
+
+    assert estimate_visible_enemy_count(frames, timestamps, 0, 3) is None
+
+
+def test_minion_red_health_bars_do_not_pull_crop_threat_position():
+    frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
+    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+    cv2.rectangle(frames[0], (1000, 300), (1060, 307), (210, 30, 30), thickness=-1)
+    cv2.rectangle(frames[0], (1120, 330), (1180, 337), (210, 30, 30), thickness=-1)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0]
+    assert threat_positions == [None]
+
+
+def test_champion_red_health_bar_still_pulls_crop_threat_position():
+    frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
+    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+    cv2.rectangle(frames[0], (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0]
+    assert threat_positions == [1050.0]
+
+def test_hybrid_crop_holds_center_when_only_minion_red_bars_are_visible():
+    frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(8, dtype=np.float32)
+    for idx in range(8):
+        cv2.rectangle(frames[idx], (900, 360), (1020, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frames[idx], (1220, 300), (1280, 307), (210, 30, 30), thickness=-1)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        7.0,
+        [(0.5, 0.5)] * 8,
+        [],
+        "1v1",
+        player_positions,
+        threat_positions,
+    )
+
+    assert threat_positions == [None] * 8
+    assert all(keyframe.crop_x == config.STATIC_CROP_X for keyframe in keyframes)
+
+
+def test_hybrid_crop_can_shift_after_persistent_champion_red_bar():
+    frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(8, dtype=np.float32)
+    for idx in range(8):
+        cv2.rectangle(frames[idx], (900, 360), (1020, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frames[idx], (1200, 300), (1320, 307), (210, 30, 30), thickness=-1)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        7.0,
+        [(0.5, 0.5)] * 8,
+        [],
+        "1v1",
+        player_positions,
+        threat_positions,
+    )
+
+    assert threat_positions == [1260.0] * 8
+    assert any(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes)
 
 def test_score_windows_uses_green_and_red_healthbar_engagement(monkeypatch):
     frames = np.zeros((20, 1080, 1920, 3), dtype=np.uint8)

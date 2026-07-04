@@ -5,6 +5,7 @@ import numpy as np
 from backend import config
 from backend.cropper import (
     AdaptiveCropper,
+    CropKeyframe,
     avoid_minimap_ui,
     blend_target,
     clamp_crop_x,
@@ -94,7 +95,7 @@ def test_minimap_white_box_fallback_centers_recorded_camera_view():
     assert all(abs(960 - (keyframe.crop_x + config.CROP_W / 2)) <= config.PLAYER_CENTER_DEADZONE_PX for keyframe in keyframes)
 
 
-def test_cropper_limits_trajectory_to_six_crops():
+def test_cropper_limits_trajectory_to_configured_keyframe_budget():
     frames = np.zeros((40, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(40, dtype=np.float32)
     keyframes = AdaptiveCropper().compute_keyframes(
@@ -108,38 +109,16 @@ def test_cropper_limits_trajectory_to_six_crops():
         [960.0] * 40,
     )
 
-    assert 1 <= len(keyframes) <= 6
+    assert 1 <= len(keyframes) <= config.MAX_CROP_KEYFRAMES
 
 
 def test_interpolate_to_frames_holds_stepwise_crops():
     cropper = AdaptiveCropper()
-    keyframes = [
-        cropper.compute_keyframes(
-            np.zeros((1, 1080, 1920, 3), dtype=np.uint8),
-            np.array([0.0], dtype=np.float32),
-            0.0,
-            0.0,
-            [(0.5, 0.5)],
-            [],
-            "1v1",
-            [700.0],
-        )[0],
-        cropper.compute_keyframes(
-            np.zeros((1, 1080, 1920, 3), dtype=np.uint8),
-            np.array([2.0], dtype=np.float32),
-            2.0,
-            2.0,
-            [(0.5, 0.5)],
-            [],
-            "1v1",
-            [1000.0],
-        )[0],
-    ]
+    keyframes = [CropKeyframe(0.0, 300), CropKeyframe(2.0, 700)]
     crops = cropper.interpolate_to_frames(keyframes, np.array([0.0, 1.0, 2.0, 3.0], dtype=np.float32))
 
-    assert crops[0][0] == crops[1][0]
-    assert crops[2][0] == crops[3][0]
-    assert crops[1][0] != crops[2][0]
+    assert crops[0][0] == crops[1][0] == 300
+    assert crops[2][0] == crops[3][0] == 700
 
 
 def test_minimap_only_enemy_does_not_pull_crop_off_player():
@@ -162,24 +141,62 @@ def test_minimap_only_enemy_does_not_pull_crop_off_player():
     assert all(abs(960 - (keyframe.crop_x + config.CROP_W / 2)) <= config.PLAYER_CENTER_DEADZONE_PX for keyframe in keyframes)
 
 
-def test_cropper_uses_visible_enemy_healthbar_as_threat_pull():
-    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
-    timestamps = np.array([0.0, 0.5, 1.0], dtype=np.float32)
+def test_cropper_uses_persistent_visible_enemy_healthbar_as_threat_pull():
+    frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(8, dtype=np.float32)
     keyframes = AdaptiveCropper().compute_keyframes(
         frames,
         timestamps,
         0.0,
-        1.0,
-        [(0.5, 0.5)] * 3,
+        7.0,
+        [(0.5, 0.5)] * 8,
         [],
         "1v1",
-        [960.0, 960.0, 960.0],
-        [1250.0, 1250.0, 1250.0],
+        [960.0] * 8,
+        [1250.0] * 8,
     )
 
-    centered_crop_x = 960 - config.CROP_W / 2
-    assert any(keyframe.crop_x > centered_crop_x for keyframe in keyframes)
+    assert any(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes)
 
+
+
+def test_hybrid_crop_ignores_bad_off_center_green_healthbar_matches():
+    frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(8, dtype=np.float32)
+    bad_player_positions = [960.0, 1445.5, 481.0, 383.5, 1520.5, 606.0, 805.5, 1189.0]
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        7.0,
+        [(0.5, 0.5)] * 8,
+        [],
+        "1v1",
+        bad_player_positions,
+        [None] * 8,
+    )
+
+    assert all(keyframe.crop_x == config.STATIC_CROP_X for keyframe in keyframes)
+
+
+def test_hybrid_crop_uses_threat_side_relative_to_locked_center():
+    frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(8, dtype=np.float32)
+    bad_player_positions = [960.0, 1445.5, 481.0, 383.5, 1520.5, 606.0, 805.5, 1189.0]
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        7.0,
+        [(0.5, 0.5)] * 8,
+        [],
+        "1v1",
+        bad_player_positions,
+        [1250.0] * 8,
+    )
+
+    assert any(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes)
+    assert all(keyframe.crop_x >= config.STATIC_CROP_X for keyframe in keyframes)
 
 def test_threat_inclusion_keeps_green_health_player_center_priority():
     crop_x = include_threat_in_crop(960 - config.CROP_W / 2, 960, 1390)

@@ -264,32 +264,30 @@ class AdaptiveCropper:
         and only reposition toward a flank when threats persist on that side.
         The result reads as deliberate reframing, not continuous sliding."""
         base_x = float(clamp_crop_x(float(config.STATIC_CROP_X), frame_w))
+        locked_player_sx = base_x + config.CROP_W / 2
         interval = float(key_times[1] - key_times[0]) if len(key_times) > 1 else 1.0
         hold_samples = max(1, int(round(config.HYBRID_HOLD_SEC / max(interval, 1e-3))))
 
-        # Which side of the champion are the threats on, per keyframe?
+        # Locked-camera clips keep the recorded champion near the crop center.
+        # Health-bar matching can occasionally select an allied/minion bar far
+        # from center; do not let that bad green-bar match yank the view.
+        # Hybrid mode uses only persistent red champion threats to choose a
+        # side, measured relative to the locked center anchor.
         sides: list[int] = []
-        player_sx_values: list[float] = []
         for timestamp in key_times:
-            player_sx = windowed_median(
-                player_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
-            )
-            if player_sx is None:
-                player_sx = frame_w / 2
             threat_sx = windowed_median(
                 threat_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
             )
             if threat_sx is None:
                 sides.append(0)
             else:
-                delta = threat_sx - player_sx
+                delta = threat_sx - locked_player_sx
                 if delta <= -config.HYBRID_SIDE_TRIGGER_PX:
                     sides.append(-1)
                 elif delta >= config.HYBRID_SIDE_TRIGGER_PX:
                     sides.append(1)
                 else:
                     sides.append(0)
-            player_sx_values.append(float(player_sx))
 
         # Hysteresis: commit to a side (or back to center) only after it
         # persists for HYBRID_HOLD_SEC worth of keyframes.
@@ -333,9 +331,9 @@ class AdaptiveCropper:
         else:
             positioned = limit_pan_speed(targets, [float(t) for t in key_times])
         smoothed: list[int] = []
-        for value, player_sx in zip(positioned, player_sx_values):
-            value = enforce_safe_zone(float(value), player_sx)
-            value = avoid_minimap_ui(value, player_sx, frame_w)
+        for value in positioned:
+            value = enforce_safe_zone(float(value), locked_player_sx)
+            value = avoid_minimap_ui(value, locked_player_sx, frame_w)
             smoothed.append(clamp_crop_x(value, frame_w))
         return [CropKeyframe(float(t), int(x)) for t, x in zip(key_times, smoothed)]
 
