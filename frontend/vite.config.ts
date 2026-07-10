@@ -9,8 +9,10 @@ export default defineConfig({
       "/jobs": "http://127.0.0.1:8000",
       "/process": "http://127.0.0.1:8000",
       "/train": "http://127.0.0.1:8000",
+      "/training": "http://127.0.0.1:8000",
       "/outputs": "http://127.0.0.1:8000",
       "/tiktok": "http://127.0.0.1:8000"
     }
   }
 });
+

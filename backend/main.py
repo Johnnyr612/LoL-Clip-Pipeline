@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +16,15 @@ from pydantic import BaseModel
 
 from . import config, models
 from .logging_config import setup_logging
+from .label_review import (
+    LabelReviewUpdate,
+    get_label_review_payload,
+    match_label_review_record,
+    regenerate_trainer_labels,
+    save_label_review_record,
+    skip_label_review_record,
+    validated_video_path,
+)
 from .pipeline import ClipPipeline
 from .tiktok import TikTokError, TikTokPostOptions
 from . import tiktok
@@ -239,3 +248,75 @@ async def train_stream() -> StreamingResponse:
             yield f"data: {json.dumps(metric)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+@app.get("/training/label-review")
+async def training_label_review() -> dict:
+    return get_label_review_payload()
+
+
+@app.post("/training/label-review/records/{record_index}")
+async def update_training_label_review(record_index: int, update: LabelReviewUpdate) -> dict:
+    return save_label_review_record(record_index, update)
+
+
+
+
+@app.post("/training/label-review/records/{record_index}/skip")
+async def skip_training_label_record(record_index: int) -> dict:
+    return skip_label_review_record(record_index)
+@app.post("/training/label-review/records/{record_index}/match-start")
+async def match_training_label_start(record_index: int) -> dict:
+    return match_label_review_record(record_index)
+
+@app.post("/training/label-review/regenerate")
+async def regenerate_training_labels() -> dict:
+    return regenerate_trainer_labels()
+
+
+@app.get("/training/video")
+async def training_review_video(path: str, request: Request) -> StreamingResponse:
+    video_path = validated_video_path(path)
+    file_size = video_path.stat().st_size
+    range_header = request.headers.get("range")
+    start = 0
+    end = file_size - 1
+    status_code = 200
+
+    if range_header:
+        units, _, raw_range = range_header.partition("=")
+        if units.strip().lower() != "bytes" or "-" not in raw_range:
+            raise HTTPException(status_code=416, detail="Invalid range header")
+        raw_start, raw_end = raw_range.split("-", 1)
+        if raw_start:
+            start = int(raw_start)
+            end = int(raw_end) if raw_end else file_size - 1
+        elif raw_end:
+            suffix_length = int(raw_end)
+            start = max(0, file_size - suffix_length)
+        if start > end or start >= file_size:
+            raise HTTPException(status_code=416, detail="Requested range not satisfiable")
+        end = min(end, file_size - 1)
+        status_code = 206
+
+    content_length = end - start + 1
+
+    def iter_file():
+        with video_path.open("rb") as handle:
+            handle.seek(start)
+            remaining = content_length
+            while remaining > 0:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Content-Type": "video/mp4",
+    }
+    if status_code == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    return StreamingResponse(iter_file(), status_code=status_code, media_type="video/mp4", headers=headers)
+

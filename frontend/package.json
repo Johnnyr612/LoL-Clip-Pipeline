@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:open": "vite --open",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
@@ -24,3 +25,4 @@
     "postcss": "8.4.38"
   }
 }
+
