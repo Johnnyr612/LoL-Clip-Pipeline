@@ -258,6 +258,8 @@ def _candidate_record(
 def _trainer_label(record: dict) -> dict:
     return {
         "filename": record["filename"],
+        "raw_path": record.get("raw_path", ""),
+        "edit_path": record.get("edit_path", ""),
         "fight_start": record["fight_start"],
         "fight_end": record["fight_end"],
         "fight_segments": record.get("fight_segments") or [[record["fight_start"], record["fight_end"]]],

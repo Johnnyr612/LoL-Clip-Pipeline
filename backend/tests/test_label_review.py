@@ -116,6 +116,8 @@ def test_save_record_preserves_multiple_fight_segments(tmp_path, monkeypatch) ->
     assert saved_trainer_labels == [
         {
             "filename": "multi-fight.mp4",
+            "raw_path": "C:/raw/multi-fight.mp4",
+            "edit_path": "D:/edits/multi-fight.mp4",
             "fight_start": 12.0,
             "fight_end": 35.0,
             "fight_segments": [[12.0, 18.0], [23.5, 35.0]],

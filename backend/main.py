@@ -51,10 +51,16 @@ trainer = TrainingCoordinator()
 
 
 class TrainRequest(BaseModel):
-    clips_dir: str
+    clips_dir: str = ""
     labels: str
     epochs: int = 25
     batch_size: Optional[int] = None
+    freeze_backbone: bool = True
+    unfreeze_last_n_layers: int = 2
+    classifier_lr: float = 1e-4
+    backbone_lr: float = 1e-5
+    val_fraction: float = 0.15
+    progress_interval: int = 5
 
 
 class TikTokPostRequest(BaseModel):
@@ -233,10 +239,16 @@ async def process_existing(payload: dict) -> dict:
 @app.post("/train")
 async def start_training(req: TrainRequest) -> dict:
     run_id = await trainer.start(
-        clips_dir=Path(req.clips_dir),
+        clips_dir=Path(req.clips_dir) if req.clips_dir else None,
         labels=Path(req.labels),
         epochs=req.epochs,
         batch_size=req.batch_size,
+        freeze_backbone=req.freeze_backbone,
+        unfreeze_last_n_layers=req.unfreeze_last_n_layers,
+        classifier_lr=req.classifier_lr,
+        backbone_lr=req.backbone_lr,
+        val_fraction=req.val_fraction,
+        progress_interval=req.progress_interval,
     )
     return {"run_id": run_id}
 

@@ -107,12 +107,21 @@ The first training pass overfit because the dataset was too small and too easy: 
 
 ## Fight Training Status
 
-The current branch includes the VideoMAE trainer in `backend/trainer.py` and `backend/trainer_worker.py`. It trains from a directory of `.mp4` clips plus a labels JSON file containing `filename`, `fight_start`, `fight_end`, and optional duration fields. It can also reuse precomputed frame arrays from `precomputed/` when matching `.npy` files exist.
+The current branch includes the VideoMAE trainer in `backend/trainer.py` and `backend/trainer_worker.py`. It trains from a labels JSON file containing `filename`, `raw_path`, `fight_start`, `fight_end`, `fight_segments`, and duration fields. `raw_path` is preferred so one training run can use source clips from multiple folders; `--clips_dir` remains a fallback for older labels that only contain filenames. It can also reuse precomputed frame arrays from `precomputed/` when matching `.npy` files exist.
+
+By default, fine-tuning freezes most of VideoMAE and trains the classifier head plus the final two encoder layers. Use `--no-freeze_backbone` for a full-backbone run, or adjust `--unfreeze_last_n_layers`, `--classifier_lr`, and `--backbone_lr` for a narrower or wider fine-tune. The trainer prints per-batch progress bars and writes live metrics to `slice_0/metrics.json` under the output directory.
 
 Example direct training command:
 
 ```powershell
-.\.venv\Scripts\python.exe backend\trainer.py --clips_dir "D:\path\to\training_clips" --labels "D:\path\to\labels.json" --epochs 25 --batch_size 4 --output_dir checkpoints
+.\.venv\Scripts\python.exe backend\trainer.py `
+  --labels "D:\Codex Projects\CS668 LoL Auto Clip Trimmer\data\training\videomae_labels.json" `
+  --epochs 25 `
+  --batch_size 4 `
+  --output_dir "D:\Codex Projects\CS668 LoL Auto Clip Trimmer\checkpoints\videomae_20260716" `
+  --freeze_backbone `
+  --unfreeze_last_n_layers 2 `
+  --progress_interval 5
 ```
 
 The backend also exposes `POST /train` and `GET /train/stream` for starting a run and streaming metrics. The Vite dev server proxies those routes, but the current frontend does not expose training controls.

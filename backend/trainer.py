@@ -36,6 +36,12 @@ class TrainingCoordinator:
         epochs: int = 25,
         batch_size: Optional[int] = None,
         output_dir: Path | None = None,
+        freeze_backbone: bool = True,
+        unfreeze_last_n_layers: int = 2,
+        classifier_lr: float = 1e-4,
+        backbone_lr: float = 1e-5,
+        val_fraction: float = 0.15,
+        progress_interval: int = 5,
     ) -> str:
         if self.process and self.process.poll() is None:
             return self.run_id or "running"
@@ -57,7 +63,18 @@ class TrainingCoordinator:
             str(epochs),
             "--output-dir",
             str(resolved_output_dir),
+            "--unfreeze-last-n-layers",
+            str(unfreeze_last_n_layers),
+            "--classifier-lr",
+            str(classifier_lr),
+            "--backbone-lr",
+            str(backbone_lr),
+            "--val-fraction",
+            str(val_fraction),
+            "--progress-interval",
+            str(progress_interval),
         ]
+        command.append("--freeze-backbone" if freeze_backbone else "--no-freeze-backbone")
         if batch_size is not None:
             command.extend(["--batch-size", str(batch_size)])
         if clips_dir is not None:
@@ -92,11 +109,17 @@ def get_mig_device_uuid(slice_index: int) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch LoL clip fight-boundary training on a MIG slice.")
-    parser.add_argument("--clips_dir", required=True, type=Path, help="Folder containing training .mp4 files.")
+    parser.add_argument("--clips_dir", type=Path, default=None, help="Fallback folder containing training .mp4 files when labels omit raw_path.")
     parser.add_argument("--labels", required=True, type=Path, help="Path to labels JSON file.")
     parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size per step.")
     parser.add_argument("--output_dir", type=Path, default=Path("./checkpoints"), help="Where to save checkpoints.")
+    parser.add_argument("--freeze_backbone", action=argparse.BooleanOptionalAction, default=True, help="Freeze VideoMAE except the selected final layers.")
+    parser.add_argument("--unfreeze_last_n_layers", type=int, default=2, help="Number of final VideoMAE encoder layers to fine-tune when frozen.")
+    parser.add_argument("--classifier_lr", type=float, default=1e-4, help="Learning rate for the classifier head.")
+    parser.add_argument("--backbone_lr", type=float, default=1e-5, help="Learning rate for unfrozen VideoMAE layers.")
+    parser.add_argument("--val_fraction", type=float, default=0.15, help="Fraction of source groups held out for validation.")
+    parser.add_argument("--progress_interval", type=int, default=5, help="Batches between progress updates.")
     return parser.parse_args()
 
 
@@ -112,11 +135,11 @@ def _configure_cli_logging() -> None:
 def main() -> int:
     _configure_cli_logging()
     args = parse_args()
-    clips_dir = args.clips_dir.expanduser().resolve()
+    clips_dir = args.clips_dir.expanduser().resolve() if args.clips_dir is not None else None
     labels = args.labels.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
 
-    if not clips_dir.exists() or not clips_dir.is_dir():
+    if clips_dir is not None and (not clips_dir.exists() or not clips_dir.is_dir()):
         raise SystemExit(f"--clips_dir must be an existing directory: {clips_dir}")
     if not labels.exists() or not labels.is_file():
         raise SystemExit(f"--labels must be an existing JSON file: {labels}")
@@ -131,8 +154,6 @@ def main() -> int:
         "0",
         "--run-id",
         run_id,
-        "--clips-dir",
-        str(clips_dir),
         "--labels",
         str(labels),
         "--epochs",
@@ -141,10 +162,32 @@ def main() -> int:
         str(args.batch_size),
         "--output-dir",
         str(output_dir),
+        "--unfreeze-last-n-layers",
+        str(args.unfreeze_last_n_layers),
+        "--classifier-lr",
+        str(args.classifier_lr),
+        "--backbone-lr",
+        str(args.backbone_lr),
+        "--val-fraction",
+        str(args.val_fraction),
+        "--progress-interval",
+        str(args.progress_interval),
     ]
+    command.append("--freeze-backbone" if args.freeze_backbone else "--no-freeze-backbone")
+    if clips_dir is not None:
+        command.extend(["--clips-dir", str(clips_dir)])
 
     logger.info("Starting training run %s", run_id)
-    logger.info("clips_dir=%s labels=%s epochs=%s batch_size=%s output_dir=%s", clips_dir, labels, args.epochs, args.batch_size, output_dir)
+    logger.info(
+        "clips_dir=%s labels=%s epochs=%s batch_size=%s output_dir=%s freeze_backbone=%s unfreeze_last_n_layers=%s",
+        clips_dir,
+        labels,
+        args.epochs,
+        args.batch_size,
+        output_dir,
+        args.freeze_backbone,
+        args.unfreeze_last_n_layers,
+    )
     process = subprocess.Popen(command, cwd=config.PROJECT_ROOT, env=env)
     return process.wait()
 
