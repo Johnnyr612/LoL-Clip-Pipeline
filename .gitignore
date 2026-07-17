@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
@@ -22,6 +22,9 @@ precomputed_v2/
 
 # Training clips
 training_clips/
+
+# Generated training data and labels
+data/training/
 
 # Training logs
 training_logs/
