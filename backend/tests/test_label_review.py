@@ -35,6 +35,14 @@ def _record(filename: str, *, skipped: bool = False) -> dict:
     }
 
 
+def _pending_record(filename: str) -> dict:
+    record = _record(filename)
+    record["needs_review"] = True
+    record["reviewed"] = False
+    record["review_status"] = "needs_review"
+    return record
+
+
 def test_skip_removes_existing_trainer_label(tmp_path, monkeypatch) -> None:
     candidates_path = tmp_path / "fight_label_candidates.json"
     trainer_labels_path = tmp_path / "videomae_labels.json"
@@ -130,4 +138,101 @@ def test_save_record_preserves_multiple_fight_segments(tmp_path, monkeypatch) ->
             "skipped": False,
         }
     ]
+
+
+def test_public_payload_marks_new_raw_files_as_holdout_candidates(tmp_path, monkeypatch) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    trained_file = raw_dir / "trained.mp4"
+    new_file = raw_dir / "new-eval.mp4"
+    trained_file.write_bytes(b"trained")
+    new_file.write_bytes(b"new")
+    candidates_path = tmp_path / "fight_label_candidates.json"
+    trainer_labels_path = tmp_path / "videomae_labels.json"
+    payload = {
+        "schema_version": 1,
+        "raw_dirs": [str(raw_dir)],
+        "records": [_record("trained.mp4")],
+        "unmatched_edits": [],
+        "duplicate_raw_stems": [],
+    }
+    candidates_path.write_text(json.dumps(payload), encoding="utf-8")
+    trainer_labels_path.write_text(
+        json.dumps([{"filename": "trained.mp4", "raw_path": str(trained_file)}]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
+    monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+
+    result = label_review.get_label_review_payload()
+
+    inventory = result["raw_file_inventory"]
+    statuses = {item["filename"]: item["status"] for item in inventory["files"]}
+    assert statuses["trained.mp4"] == "used_for_training"
+    assert statuses["new-eval.mp4"] == "new_holdout_candidate"
+    assert inventory["summary"]["used_for_training"] == 1
+    assert inventory["summary"]["new_holdout_candidates"] == 1
+
+
+def test_regenerate_trainer_labels_excludes_pending_review_records(tmp_path, monkeypatch) -> None:
+    candidates_path = tmp_path / "fight_label_candidates.json"
+    trainer_labels_path = tmp_path / "videomae_labels.json"
+    payload = {
+        "schema_version": 1,
+        "records": [_record("approved.mp4"), _pending_record("pending.mp4")],
+        "unmatched_edits": [],
+        "duplicate_raw_stems": [],
+    }
+    candidates_path.write_text(json.dumps(payload), encoding="utf-8")
+    trainer_labels_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
+    monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+
+    result = label_review.regenerate_trainer_labels()
+
+    saved = json.loads(trainer_labels_path.read_text(encoding="utf-8"))
+    assert result["count"] == 1
+    assert [item["filename"] for item in saved] == ["approved.mp4"]
+
+
+def test_add_raw_file_to_review_queue_creates_pending_videomae_record(tmp_path, monkeypatch) -> None:
+    raw_file = tmp_path / "fresh.mp4"
+    raw_file.write_bytes(b"raw")
+    candidates_path = tmp_path / "fight_label_candidates.json"
+    trainer_labels_path = tmp_path / "videomae_labels.json"
+    payload = {
+        "schema_version": 1,
+        "raw_dirs": [str(tmp_path)],
+        "records": [],
+        "unmatched_edits": [],
+        "duplicate_raw_stems": [],
+    }
+    candidates_path.write_text(json.dumps(payload), encoding="utf-8")
+    trainer_labels_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
+    monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+    monkeypatch.setattr(
+        label_review,
+        "_record_from_videomae_detection",
+        lambda path: _pending_record(path.name)
+        | {
+            "raw_path": str(path),
+            "edit_path": "",
+            "edit_filename": "",
+            "match": {"method": "videomae_current_checkpoint", "score": 0.8, "confidence": "high"},
+        },
+    )
+
+    result = label_review.add_raw_file_to_review_queue(str(raw_file))
+
+    saved_candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+    saved_trainer_labels = json.loads(trainer_labels_path.read_text(encoding="utf-8"))
+    assert result["record_index"] == 0
+    assert saved_candidates["records"][0]["filename"] == "fresh.mp4"
+    assert saved_candidates["records"][0]["needs_review"] is True
+    assert saved_candidates["records"][0]["match"]["method"] == "videomae_current_checkpoint"
+    assert saved_trainer_labels == []
 

@@ -2,6 +2,7 @@ import React from "react";
 
 type LabelPayload = {
   summary: LabelSummary;
+  raw_file_inventory?: RawFileInventory;
   records: LabelRecord[];
   unmatched_edits: string[];
   duplicate_raw_stems: string[];
@@ -14,6 +15,31 @@ type LabelSummary = {
   high_confidence: number;
   unmatched: number;
   skipped: number;
+};
+
+type RawFileInventory = {
+  summary: {
+    total: number;
+    used_for_training: number;
+    new_holdout_candidates: number;
+    review_queue: number;
+    skipped: number;
+    missing_dirs: number;
+  };
+  files: RawTrainingFile[];
+  missing_dirs: string[];
+  duplicate_stems: string[];
+};
+
+type RawTrainingFile = {
+  filename: string;
+  path: string;
+  source_dir: string;
+  size: number;
+  modified_at: string;
+  status: "used_for_training" | "new_holdout_candidate" | "review_queue" | "skipped";
+  used_for_training: boolean;
+  record_index: number | null;
 };
 
 type LabelRecord = {
@@ -43,6 +69,12 @@ type LabelRecord = {
   review_note: string;
   skipped?: boolean;
   review_status?: string;
+  detector_flags?: string[];
+};
+
+type AddRawFileResult = {
+  record_index: number;
+  payload: LabelPayload;
 };
 
 type FightSegmentField = {
@@ -60,6 +92,29 @@ type EditableFields = {
 function fmt(value: number | null | undefined) {
   if (typeof value !== "number" || Number.isNaN(value)) return "0.000";
   return value.toFixed(3);
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatModified(value: string) {
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function formatSegments(segments: Array<{ start: number; end: number }>) {
+  if (segments.length === 0) return "none";
+  return segments.map((segment, index) => (
+    `Fight ${index + 1}: ${fmt(segment.start)}s-${fmt(segment.end)}s`
+  )).join(" | ");
 }
 
 function videoUrl(path: string) {
@@ -129,6 +184,29 @@ function statusClass(status: ReviewStatus, active: boolean) {
   if (status === "skip") return `${base} border-slate-400 bg-slate-200 text-slate-700 opacity-80 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300${activeClass}`;
   return `${base} border-sky-500 bg-sky-50 text-sky-950 dark:bg-sky-950/30 dark:text-sky-100${activeClass}`;
 }
+
+function rawFileStatusLabel(status: RawTrainingFile["status"]) {
+  if (status === "used_for_training") return "Used for training";
+  if (status === "review_queue") return "In review queue";
+  if (status === "skipped") return "Skipped";
+  return "New / eval";
+}
+
+function rawFileStatusClass(status: RawTrainingFile["status"]) {
+  if (status === "used_for_training") return "chip chip-success";
+  if (status === "review_queue") return "chip chip-warning";
+  if (status === "skipped") return "chip chip-neutral";
+  return "chip chip-active";
+}
+
+function visiblePositionFor(payload: LabelPayload, recordIndex: number, needsReviewOnly: boolean) {
+  const indexes = payload.records
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => !needsReviewOnly || (item.needs_review && !item.skipped))
+    .map(({ index }) => index);
+  return Math.max(0, indexes.indexOf(recordIndex));
+}
+
 function clampPct(value: number) {
   return Math.max(0, Math.min(100, value));
 }
@@ -137,9 +215,12 @@ export function LabelReview() {
   const [payload, setPayload] = React.useState<LabelPayload | null>(null);
   const [visiblePosition, setVisiblePosition] = React.useState(0);
   const [showNeedsReviewOnly, setShowNeedsReviewOnly] = React.useState(true);
+  const [rawFilesOpen, setRawFilesOpen] = React.useState(false);
   const [fields, setFields] = React.useState<EditableFields | null>(null);
   const [status, setStatus] = React.useState("");
   const [error, setError] = React.useState("");
+  const [rawActionPath, setRawActionPath] = React.useState("");
+  const [detectingFight, setDetectingFight] = React.useState(false);
   const rawVideoRef = React.useRef<HTMLVideoElement | null>(null);
 
   React.useEffect(() => {
@@ -172,6 +253,44 @@ export function LabelReview() {
     }
     setPayload(next);
     setVisiblePosition(0);
+  }
+
+  async function refreshRawFiles() {
+    setStatus("Refreshing private raw file inventory...");
+    setError("");
+    const response = await fetch("/training/label-review/refresh-files", {
+      method: "POST"
+    });
+    const next = await response.json().catch(() => null);
+    if (!response.ok || !next) {
+      setError(next?.detail ?? "Unable to refresh raw files");
+      setStatus("");
+      return;
+    }
+    setPayload(next);
+    setStatus("Raw file inventory refreshed.");
+  }
+
+  async function addRawFileToReview(path: string) {
+    setRawActionPath(path);
+    setStatus("Detecting fight clip with current VideoMAE weights...");
+    setError("");
+    const response = await fetch("/training/label-review/raw-files", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path })
+    });
+    const result = await response.json().catch(() => null) as AddRawFileResult | null;
+    setRawActionPath("");
+    if (!response.ok || !result?.payload) {
+      setError((result as any)?.detail ?? "Unable to add raw file to review queue");
+      setStatus("");
+      return;
+    }
+    setPayload(result.payload);
+    setShowNeedsReviewOnly(true);
+    setVisiblePosition(visiblePositionFor(result.payload, result.record_index, true));
+    setStatus("Added to review queue with VideoMAE clip boundaries.");
   }
 
   function updateField(key: "clip_start" | "clip_end" | "review_note", value: string) {
@@ -249,31 +368,6 @@ export function LabelReview() {
     }, 150);
   }
 
-  async function findClipStart() {
-    if (!record) return;
-    setStatus("Pixel matching edited reference against raw video...");
-    setError("");
-    const response = await fetch(`/training/label-review/records/${activeIndex}/match-start`, {
-      method: "POST"
-    });
-    const result = await response.json().catch(() => null);
-    if (!response.ok || !result) {
-      setError(result?.detail ?? "Unable to pixel-match clip start");
-      setStatus("");
-      return;
-    }
-    setPayload((current) => {
-      if (!current) return current;
-      const records = [...current.records];
-      records[activeIndex] = result.record;
-      return { ...current, records, summary: result.summary };
-    });
-    setFields(fieldsFromRecord(result.record));
-    setStatus(`Pixel matched clip start to ${fmt(result.record.clip_start)}s.`);
-    window.setTimeout(() => previewRawVideo(result.record.clip_start), 100);
-  }
-
-
   async function skipRecord() {
     if (!record) return;
     setStatus("Skipping label...");
@@ -349,6 +443,35 @@ export function LabelReview() {
     );
   }
 
+  async function detectFightClip() {
+    if (!record) return;
+    setDetectingFight(true);
+    setStatus("Finding postable clip with current VideoMAE weights...");
+    setError("");
+    const response = await fetch(`/training/label-review/records/${activeIndex}/detect-fight`, {
+      method: "POST"
+    });
+    const result = await response.json().catch(() => null);
+    setDetectingFight(false);
+    if (!response.ok || !result) {
+      setError(result?.detail ?? "Unable to find clip");
+      setStatus("");
+      return;
+    }
+    setPayload((current) => {
+      if (!current) return current;
+      const records = [...current.records];
+      records[activeIndex] = result.record;
+      return { ...current, records, summary: result.summary };
+    });
+    setFields(fieldsFromRecord(result.record));
+    const detectedSegments = normalizeFightSegments(result.record).map(([start, end]) => ({ start, end }));
+    setStatus(
+      `Found clip ${fmt(result.record.clip_start)}s-${fmt(result.record.clip_end)}s. ${formatSegments(detectedSegments)}. Adjust before approving.`
+    );
+    window.setTimeout(() => previewRawVideo(result.record.clip_start), 100);
+  }
+
   if (!payload || !record || !fields) {
     return (
       <section className="surface-panel p-4 text-sm text-slate-600 dark:text-slate-400">
@@ -364,8 +487,14 @@ export function LabelReview() {
     start: numberFromField(item.start),
     end: numberFromField(item.end)
   }));
+  const currentClipStart = numberFromField(fields.clip_start);
+  const currentClipEnd = numberFromField(fields.clip_end);
+  const currentClipDuration = Math.max(0, currentClipEnd - currentClipStart);
   const firstFightStart = fightSegmentValues[0]?.start ?? numberFromField(fields.clip_start);
   const lastFightEnd = fightSegmentValues[fightSegmentValues.length - 1]?.end ?? numberFromField(fields.clip_end);
+  const rawInventory = payload.raw_file_inventory;
+  const newRawFiles = rawInventory?.summary.new_holdout_candidates ?? 0;
+  const hasEditedReference = Boolean(record.edit_path);
 
   return (
     <section className="grid gap-4">
@@ -379,18 +508,93 @@ export function LabelReview() {
               <span className="chip chip-neutral">{payload.summary.total} total</span>
               <span className="chip chip-warning">{payload.summary.needs_review} need review</span>
               <span className="chip chip-neutral">{payload.summary.skipped ?? 0} skipped</span>
+              {rawInventory ? <span className="chip chip-active">{newRawFiles} new / eval</span> : null}
             </div>
           </div>
-          <label className="flex items-center gap-2 rounded-md border border-lane bg-slate-50 px-3 py-2 text-sm font-medium dark:border-slate-800 dark:bg-slate-950">
-            <input
-              type="checkbox"
-              checked={showNeedsReviewOnly}
-              onChange={(event) => toggleNeedsReviewOnly(event.target.checked)}
-            />
-            Needs review only
-          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button className="button" onClick={() => void refreshRawFiles()} type="button">
+              Refresh Raw Files
+            </button>
+            <label className="flex items-center gap-2 rounded-md border border-lane bg-slate-50 px-3 py-2 text-sm font-medium dark:border-slate-800 dark:bg-slate-950">
+              <input
+                type="checkbox"
+                checked={showNeedsReviewOnly}
+                onChange={(event) => toggleNeedsReviewOnly(event.target.checked)}
+              />
+              Needs review only
+            </label>
+          </div>
         </div>
       </div>
+
+      {rawInventory ? (
+        <div className="surface-panel p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="section-kicker">Private local files</p>
+              <h3 className="text-sm font-semibold">Raw Video Inventory</h3>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="chip chip-active">{rawInventory.summary.new_holdout_candidates} new / eval</span>
+              <span className="chip chip-success">{rawInventory.summary.used_for_training} used for training</span>
+              <span className="chip chip-warning">{rawInventory.summary.review_queue} in review</span>
+              <span className="chip chip-neutral">{rawInventory.summary.total} scanned</span>
+              <button className="button min-h-8 px-2 py-1 text-xs" onClick={() => setRawFilesOpen((value) => !value)} type="button">
+                {rawFilesOpen ? "Collapse" : "Expand"}
+              </button>
+            </div>
+          </div>
+          {rawFilesOpen ? (
+            <div>
+              {rawInventory.missing_dirs.length > 0 ? (
+                <p className="mb-3 rounded-md border border-danger bg-red-50 p-3 text-sm text-danger dark:bg-red-950/30">
+                  {rawInventory.missing_dirs.length} configured raw folder could not be found.
+                </p>
+              ) : null}
+              <div className="max-h-56 overflow-y-auto pr-1">
+                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {rawInventory.files.map((item) => (
+                    <div
+                      key={item.path}
+                      className="rounded-md border border-lane bg-slate-50 p-2 text-xs transition hover:shadow-sm dark:border-slate-800 dark:bg-slate-950"
+                    >
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <span className={rawFileStatusClass(item.status)}>{rawFileStatusLabel(item.status)}</span>
+                        <span className="shrink-0 text-slate-500 dark:text-slate-400">{formatFileSize(item.size)}</span>
+                      </div>
+                      <p className="truncate font-semibold" title={item.filename}>{item.filename}</p>
+                      <p className="mt-1 truncate text-slate-500 dark:text-slate-400" title={item.path}>
+                        {formatModified(item.modified_at)} | {item.path}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {item.status === "new_holdout_candidate" ? (
+                          <button
+                            className="button-primary min-h-8 px-2 py-1 text-xs"
+                            disabled={rawActionPath === item.path}
+                            onClick={() => void addRawFileToReview(item.path)}
+                            type="button"
+                          >
+                            {rawActionPath === item.path ? "Adding..." : "Add to Review"}
+                          </button>
+                        ) : null}
+                        {typeof item.record_index === "number" ? (
+                          <button
+                            className="button min-h-8 px-2 py-1 text-xs"
+                            onClick={() => selectRecord(item.record_index as number)}
+                            type="button"
+                          >
+                            Open
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_360px]">
         <aside className="surface-panel p-3">
@@ -471,18 +675,20 @@ export function LabelReview() {
             </div>
           </div>
 
-          <div className="surface-panel p-3">
-            <p className="section-kicker mb-1">Comparison clip</p>
-            <p className="mb-3 text-sm font-semibold">Edited Reference</p>
-            <video
-              key={`${activeIndex}:${record.edit_path}`}
-              className="aspect-video w-full rounded-md bg-black"
-              controls
-              preload="metadata"
-              src={videoUrl(record.edit_path)}
-            />
-            <p className="mt-2 break-all text-xs text-slate-500 dark:text-slate-400">{record.edit_filename}</p>
-          </div>
+          {hasEditedReference ? (
+            <div className="surface-panel p-3">
+              <p className="section-kicker mb-1">Comparison clip</p>
+              <p className="mb-3 text-sm font-semibold">Edited Reference</p>
+              <video
+                key={`${activeIndex}:${record.edit_path}`}
+                className="aspect-video w-full rounded-md bg-black"
+                controls
+                preload="metadata"
+                src={videoUrl(record.edit_path)}
+              />
+              <p className="mt-2 break-all text-xs text-slate-500 dark:text-slate-400">{record.edit_filename}</p>
+            </div>
+          ) : null}
         </div>
 
         <aside className="surface-panel self-start p-4 xl:sticky xl:top-24">
@@ -552,6 +758,28 @@ export function LabelReview() {
 
           <dl className="mt-4 grid gap-2 rounded-md border border-lane bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-950">
             <div className="flex justify-between gap-3">
+              <dt className="text-slate-500 dark:text-slate-400">Clip start</dt>
+              <dd className="text-right font-semibold">{fmt(currentClipStart)}s</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-slate-500 dark:text-slate-400">Clip end</dt>
+              <dd className="text-right font-semibold">{fmt(currentClipEnd)}s</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-slate-500 dark:text-slate-400">Clip duration</dt>
+              <dd className="text-right">{fmt(currentClipDuration)}s</dd>
+            </div>
+            <div className="grid gap-1">
+              <dt className="text-slate-500 dark:text-slate-400">Fight segments</dt>
+              <dd className="grid gap-1 text-right font-semibold">
+                {fightSegmentValues.map((segment, index) => (
+                  <span key={`${index}:${segment.start}:${segment.end}`}>
+                    {index + 1}: {fmt(segment.start)}s-{fmt(segment.end)}s
+                  </span>
+                ))}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-3">
               <dt className="text-slate-500 dark:text-slate-400">Match</dt>
               <dd className="text-right font-semibold">{record.match.confidence}</dd>
             </div>
@@ -588,8 +816,8 @@ export function LabelReview() {
             <button className="button" onClick={() => move(1)}>
               Next
             </button>
-            <button className="button col-span-2" onClick={() => void findClipStart()}>
-              Find Clip Start
+            <button className="button-primary col-span-2" disabled={detectingFight} onClick={() => void detectFightClip()}>
+              {detectingFight ? "Finding..." : "Find Clip"}
             </button>
             <button className="button-warning" onClick={() => void skipRecord()}>
               Skip

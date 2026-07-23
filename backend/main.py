@@ -17,7 +17,10 @@ from pydantic import BaseModel
 from . import config, models
 from .logging_config import setup_logging
 from .label_review import (
+    AddRawFileRequest,
     LabelReviewUpdate,
+    add_raw_file_to_review_queue,
+    detect_label_review_record_with_videomae,
     get_label_review_payload,
     match_label_review_record,
     regenerate_trainer_labels,
@@ -388,6 +391,17 @@ async def training_label_review() -> dict:
     return get_label_review_payload()
 
 
+@app.post("/training/label-review/refresh-files")
+async def refresh_training_label_files() -> dict:
+    return get_label_review_payload()
+
+
+@app.post("/training/label-review/raw-files")
+async def add_training_raw_file(req: AddRawFileRequest) -> dict:
+    result = await asyncio.to_thread(add_raw_file_to_review_queue, req.path)
+    return {**result, "payload": get_label_review_payload()}
+
+
 @app.post("/training/label-review/records/{record_index}")
 async def update_training_label_review(record_index: int, update: LabelReviewUpdate) -> dict:
     return save_label_review_record(record_index, update)
@@ -401,6 +415,11 @@ async def skip_training_label_record(record_index: int) -> dict:
 @app.post("/training/label-review/records/{record_index}/match-start")
 async def match_training_label_start(record_index: int) -> dict:
     return match_label_review_record(record_index)
+
+
+@app.post("/training/label-review/records/{record_index}/detect-fight")
+async def detect_training_label_fight(record_index: int) -> dict:
+    return await asyncio.to_thread(detect_label_review_record_with_videomae, record_index)
 
 @app.post("/training/label-review/regenerate")
 async def regenerate_training_labels() -> dict:

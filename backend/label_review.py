@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,10 @@ class LabelReviewUpdate(BaseModel):
     review_note: str = ""
 
 
+class AddRawFileRequest(BaseModel):
+    path: str
+
+
 def _load_payload() -> dict[str, Any]:
     if not LABEL_CANDIDATES_PATH.exists():
         raise HTTPException(status_code=404, detail=f"Label file not found: {LABEL_CANDIDATES_PATH}")
@@ -39,11 +46,153 @@ def _load_payload() -> dict[str, Any]:
     return payload
 
 
+def _load_trainer_labels() -> list[dict[str, Any]]:
+    if not TRAINER_LABELS_PATH.exists():
+        return []
+    try:
+        labels = json.loads(TRAINER_LABELS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return labels if isinstance(labels, list) else []
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temp_path.replace(path)
+
+
+def _path_key(path_value: object) -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    return Path(raw).expanduser().resolve(strict=False).as_posix().lower()
+
+
+def _raw_dirs_from_payload(payload: dict[str, Any]) -> list[Path]:
+    raw_values = payload.get("raw_dirs")
+    if not isinstance(raw_values, list):
+        raw_values = [payload.get("raw_dir", "")]
+
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        path = Path(str(value or "")).expanduser()
+        key = _path_key(path)
+        if key and key not in seen:
+            dirs.append(path)
+            seen.add(key)
+    return dirs
+
+
+def _trainer_label_keys(labels: list[dict[str, Any]]) -> tuple[set[str], set[str], set[str]]:
+    path_keys: set[str] = set()
+    filenames: set[str] = set()
+    stems: set[str] = set()
+    for label in labels:
+        raw_path = str(label.get("raw_path") or "").strip()
+        filename = str(label.get("filename") or Path(raw_path).name).strip()
+        if raw_path:
+            path_keys.add(_path_key(raw_path))
+        if filename:
+            filenames.add(filename.lower())
+            stems.add(Path(filename).stem.lower())
+    return path_keys, filenames, stems
+
+
+def _record_index_by_raw_path(records: list[dict[str, Any]]) -> dict[str, int]:
+    indexes: dict[str, int] = {}
+    for index, record in enumerate(records):
+        raw_path_key = _path_key(record.get("raw_path", ""))
+        filename = str(record.get("filename") or "").lower()
+        stem = Path(filename).stem.lower() if filename else ""
+        for key in (raw_path_key, filename, stem):
+            if key and key not in indexes:
+                indexes[key] = index
+    return indexes
+
+
+def _find_record_index(records: list[dict[str, Any]], raw_path: Path) -> int | None:
+    indexes = _record_index_by_raw_path(records)
+    key = _path_key(raw_path)
+    filename = raw_path.name.lower()
+    stem = raw_path.stem.lower()
+    return indexes.get(key, indexes.get(filename, indexes.get(stem)))
+
+
+def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
+    records = payload.get("records", [])
+    records = records if isinstance(records, list) else []
+    trainer_path_keys, trainer_filenames, trainer_stems = _trainer_label_keys(_load_trainer_labels())
+    record_indexes = _record_index_by_raw_path(records)
+    raw_files: list[dict[str, Any]] = []
+    missing_dirs: list[str] = []
+    duplicate_stems: set[str] = set()
+    seen_stems: set[str] = set()
+
+    for raw_dir in _raw_dirs_from_payload(payload):
+        if not raw_dir.exists() or not raw_dir.is_dir():
+            missing_dirs.append(str(raw_dir))
+            continue
+        for path in sorted(raw_dir.glob("*.mp4")):
+            key = _path_key(path)
+            filename = path.name
+            stem = path.stem.lower()
+            if stem in seen_stems:
+                duplicate_stems.add(path.stem)
+            seen_stems.add(stem)
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+
+            record_index = (
+                record_indexes.get(key)
+                if key in record_indexes
+                else record_indexes.get(filename.lower(), record_indexes.get(stem))
+            )
+            used_for_training = (
+                key in trainer_path_keys
+                or filename.lower() in trainer_filenames
+                or stem in trainer_stems
+            )
+            if used_for_training:
+                status = "used_for_training"
+            elif record_index is not None:
+                record = records[record_index]
+                status = "skipped" if record.get("skipped", False) else "review_queue"
+            else:
+                status = "new_holdout_candidate"
+
+            raw_files.append(
+                {
+                    "filename": filename,
+                    "path": str(path),
+                    "source_dir": str(raw_dir),
+                    "size": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    "status": status,
+                    "used_for_training": used_for_training,
+                    "record_index": record_index,
+                }
+            )
+
+    raw_files.sort(key=lambda item: (item["status"] != "new_holdout_candidate", item["filename"].lower()))
+    summary = {
+        "total": len(raw_files),
+        "used_for_training": sum(1 for item in raw_files if item["status"] == "used_for_training"),
+        "new_holdout_candidates": sum(1 for item in raw_files if item["status"] == "new_holdout_candidate"),
+        "review_queue": sum(1 for item in raw_files if item["status"] == "review_queue"),
+        "skipped": sum(1 for item in raw_files if item["status"] == "skipped"),
+        "missing_dirs": len(missing_dirs),
+    }
+    return {
+        "summary": summary,
+        "files": raw_files,
+        "missing_dirs": missing_dirs,
+        "duplicate_stems": sorted(duplicate_stems),
+    }
 
 
 def _clip(value: float, lower: float, upper: float) -> float:
@@ -103,6 +252,81 @@ def _segments_from_fights(
         "fight": fight_segments,
         "bridge": bridge_segments,
         "post_fight_context": [round(float(last_end), 3), round(float(clip_end), 3)],
+    }
+
+
+def _match_confidence_from_scores(scores: list[float]) -> str:
+    if not scores:
+        return "unmatched"
+    peak = max(scores)
+    if peak >= config.FIGHT_CONFIDENCE_THRESHOLD:
+        return "high"
+    if peak >= config.FIGHT_ONSET_THRESHOLD:
+        return "medium"
+    return "low"
+
+
+def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
+    from dataclasses import replace
+
+    from .fight_detector import (
+        FightDetector,
+        TrimSettings,
+        add_output_context,
+        apply_dialog_extension,
+        boundaries_from_scores,
+        finish_on_kill_or_death,
+    )
+    from .frame_io import decode_video
+    from .pipeline import validate_input
+
+    validation = validate_input(raw_path)
+    settings = TrimSettings()
+    job_id = f"label_review_{uuid.uuid4().hex}"
+    temp_dir = config.TEMP_DIR / job_id
+    try:
+        bundle = decode_video(raw_path, job_id)
+        detector = FightDetector()
+        scores = detector.score_windows(bundle.full_frames, bundle.timestamps_full)
+        fight_start, fight_end, flags = boundaries_from_scores(scores, validation.duration, settings)
+        dialog = detector.transcribe(bundle.audio_path)
+        trim_result = apply_dialog_extension(fight_start, fight_end, validation.duration, dialog)
+        trim = finish_on_kill_or_death(
+            replace(trim_result, flags=flags + trim_result.flags),
+            bundle.full_frames,
+            bundle.timestamps_full,
+            validation.duration,
+            settings,
+        )
+        trim = add_output_context(trim, validation.duration, settings)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    fight_segments = [[round(float(trim.fight_start), 3), round(float(trim.fight_end), 3)]]
+    peak_score = max(scores) if scores else None
+    return {
+        "filename": raw_path.name,
+        "raw_path": str(raw_path),
+        "edit_path": "",
+        "edit_filename": "",
+        "raw_duration": round(float(validation.duration), 3),
+        "edit_duration": round(float(trim.clip_end - trim.clip_start), 3),
+        "clip_start": trim.clip_start,
+        "clip_end": trim.clip_end,
+        "fight_start": trim.fight_start,
+        "fight_end": trim.fight_end,
+        "fight_segments": fight_segments,
+        "segments": _segments_from_fights(trim.clip_start, trim.clip_end, fight_segments),
+        "match": {
+            "method": "videomae_current_checkpoint",
+            "score": round(float(peak_score), 5) if peak_score is not None else None,
+            "confidence": _match_confidence_from_scores(scores),
+        },
+        "needs_review": True,
+        "reviewed": False,
+        "skipped": False,
+        "review_status": "needs_review",
+        "review_note": "Generated from current VideoMAE weights; review before approving for training.",
+        "detector_flags": trim.flags,
     }
 
 
@@ -275,12 +499,14 @@ def _summary(records: list[dict[str, Any]]) -> dict[str, int]:
 
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     records = payload["records"]
+    raw_file_inventory = _scan_training_raw_files(payload)
     return {
         "schema_version": payload.get("schema_version", 1),
         "raw_dirs": payload.get("raw_dirs", []),
         "edits_dir": payload.get("edits_dir", ""),
         "defaults": payload.get("defaults", {}),
         "summary": _summary(records),
+        "raw_file_inventory": raw_file_inventory,
         "records": records,
         "unmatched_edits": payload.get("unmatched_edits", []),
         "duplicate_raw_stems": payload.get("duplicate_raw_stems", []),
@@ -415,7 +641,11 @@ def match_label_review_record(index: int, search_step: float = 0.5) -> dict[str,
 def regenerate_trainer_labels(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = payload or _load_payload()
     records = payload["records"]
-    trainer_labels = [_trainer_label(record) for record in records if not record.get("skipped", False)]
+    trainer_labels = [
+        _trainer_label(record)
+        for record in records
+        if not record.get("skipped", False) and not record.get("needs_review", True)
+    ]
     _write_json(TRAINER_LABELS_PATH, trainer_labels)
     return {"path": str(TRAINER_LABELS_PATH), "count": len(trainer_labels)}
 
@@ -427,3 +657,40 @@ def validated_video_path(path_value: str) -> Path:
     if path.suffix.lower() != ".mp4":
         raise HTTPException(status_code=422, detail="Only MP4 review videos are supported")
     return path
+
+
+def add_raw_file_to_review_queue(path_value: str) -> dict[str, Any]:
+    payload = _load_payload()
+    records = payload["records"]
+    raw_path = validated_video_path(path_value)
+    existing_index = _find_record_index(records, raw_path)
+    if existing_index is not None:
+        return {"record": records[existing_index], "record_index": existing_index, "summary": _summary(records)}
+
+    record = _record_from_videomae_detection(raw_path)
+    records.append(record)
+    _write_json(LABEL_CANDIDATES_PATH, payload)
+    regenerate_trainer_labels(payload)
+    return {
+        "record": record,
+        "record_index": len(records) - 1,
+        "summary": _summary(records),
+    }
+
+
+def detect_label_review_record_with_videomae(index: int) -> dict[str, Any]:
+    payload = _load_payload()
+    records = payload["records"]
+    if index < 0 or index >= len(records):
+        raise HTTPException(status_code=404, detail="Label record not found")
+
+    previous = records[index]
+    raw_path = validated_video_path(str(previous.get("raw_path", "")))
+    updated = _record_from_videomae_detection(raw_path)
+    if previous.get("edit_path"):
+        updated["edit_path"] = previous.get("edit_path", "")
+        updated["edit_filename"] = previous.get("edit_filename", "")
+    records[index].update(updated)
+    _write_json(LABEL_CANDIDATES_PATH, payload)
+    regenerate_trainer_labels(payload)
+    return {"record": records[index], "summary": _summary(records)}
