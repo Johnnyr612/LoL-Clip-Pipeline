@@ -101,6 +101,15 @@ function activeJobLabel(job: JobRecord | null) {
   return job.status;
 }
 
+function jobChipClass(job: JobRecord | null) {
+  if (!job) return "chip chip-neutral";
+  if (job.status === "complete") return "chip chip-success";
+  if (job.status === "failed") return "chip chip-danger";
+  if (job.status === "running") return "chip chip-active";
+  if (job.status === "queued") return "chip chip-warning";
+  return "chip chip-neutral";
+}
+
 function formatFileSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -274,13 +283,20 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const displayElapsed = elapsed || durationFromJob(job);
 
   return (
-    <aside className="border border-lane bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-      <h2 className="text-base font-semibold">Jobs</h2>
+    <aside className="surface-panel self-start p-4 lg:sticky lg:top-24">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="section-kicker">Pipeline control</p>
+          <h2 className="section-title mt-1">Jobs</h2>
+        </div>
+        <span className={jobChipClass(job)}>{activeJobLabel(job)}</span>
+      </div>
+
       <div className="mt-4 grid gap-3">
-        <label className="grid gap-1 text-sm font-medium">
+        <label className="field-label">
           Source MP4 path
           <input
-            className="border border-lane bg-white px-3 py-2 text-sm outline-none focus:border-accent dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+            className="input-field"
             value={sourcePath}
             onChange={(event) => setSourcePath(event.target.value)}
             placeholder="C:/Videos/clip.mp4"
@@ -292,28 +308,28 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
           </span>
         </label>
         <button
-          className="bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          className="button-primary"
           disabled={!sourcePath || busy}
           onClick={() => void start()}
           type="button"
         >
           {busy ? "Starting" : "Start"}
         </button>
-        {errorMessage ? <p className="border border-danger p-3 text-sm text-danger dark:bg-red-950/40">{errorMessage}</p> : null}
+        {errorMessage ? <p className="rounded-md border border-danger bg-red-50 p-3 text-sm text-danger dark:bg-red-950/40">{errorMessage}</p> : null}
       </div>
 
-      <div className="mt-4 border-t border-lane pt-4 dark:border-slate-800">
+      <div className="divider mt-5 pt-4">
         <div className="flex items-center justify-between gap-3">
           <button
             aria-expanded={advancedOpen}
-            className="text-left text-sm font-semibold"
+            className="text-left text-sm font-semibold text-slate-900 transition hover:text-accent dark:text-slate-100"
             onClick={() => setAdvancedOpen((value) => !value)}
             type="button"
           >
             Advanced Trim Settings
           </button>
           <button
-            className="shrink-0 border border-lane px-2 py-1 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-300"
+            className="button min-h-8 shrink-0 px-2 py-1 text-xs"
             onClick={() => setAdvancedOpen((value) => !value)}
             type="button"
           >
@@ -325,7 +341,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
             <div className="grid grid-cols-3 gap-2">
               {Object.entries(trimPresets).map(([name, preset]) => (
                 <button
-                  className="border border-lane px-2 py-1.5 text-xs font-semibold hover:border-accent dark:border-slate-700"
+                  className="button min-h-8 px-2 py-1.5 text-xs"
                   key={name}
                   onClick={() => setTrimSettings(preset)}
                   type="button"
@@ -378,18 +394,18 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         ) : null}
       </div>
 
-      <div className="mt-5 border-t border-lane pt-4 dark:border-slate-800">
+      <div className="divider mt-5 pt-4">
         <div className="flex items-center justify-between gap-3">
           <button
             aria-expanded={outputsOpen}
-            className="text-left text-sm font-semibold"
+            className="text-left text-sm font-semibold text-slate-900 transition hover:text-accent dark:text-slate-100"
             onClick={() => setOutputsOpen((value) => !value)}
             type="button"
           >
             Previous Outputs
           </button>
           <button
-            className="shrink-0 border border-lane px-2 py-1 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-300"
+            className="button min-h-8 shrink-0 px-2 py-1 text-xs"
             onClick={() => setOutputsOpen((value) => !value)}
             type="button"
           >
@@ -405,10 +421,10 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
               return (
                 <button
                   key={output.path}
-                  className={`grid gap-1 border px-3 py-2 text-left text-sm ${
+                  className={`grid rounded-md border px-3 py-2 text-left text-sm transition ${
                     isSelected
-                      ? "border-accent bg-blue-50 dark:bg-blue-950/30"
-                      : "border-lane hover:border-accent dark:border-slate-800"
+                      ? "border-accent bg-blue-50 shadow-sm dark:bg-blue-950/30"
+                      : "border-lane bg-white hover:border-accent hover:shadow-sm dark:border-slate-800 dark:bg-slate-950"
                   }`}
                   onClick={() => onSelectJob(historyJob)}
                   type="button"
@@ -422,15 +438,18 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
               );
             })
           ) : (
-            <p className="border border-dashed border-lane p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+            <p className="rounded-md border border-dashed border-lane p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
               No completed clips found.
             </p>
           )}
         </div> : null}
       </div>
 
-      <div className="mt-5 border-t border-lane pt-4 dark:border-slate-800">
-        <h3 className="mb-3 text-sm font-semibold">Current Job Progress</h3>
+      <div className="divider mt-5 pt-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Current Job Progress</h3>
+          {job ? <span className="text-xs text-slate-500 dark:text-slate-400">{displayElapsed ? formatElapsed(displayElapsed) : "--"}</span> : null}
+        </div>
         {selectedJob?.history_only ? (
           <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
             Viewing previous output: {displaySource(selectedJob.output_path)}
@@ -438,7 +457,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         ) : null}
         <div className="flex items-center justify-between gap-3 text-sm">
           <span className="break-all font-medium">{job?.id ?? "No job selected"}</span>
-          <span className="shrink-0 text-slate-600 dark:text-slate-400">{activeJobLabel(job)}</span>
+          <span className={jobChipClass(job)}>{activeJobLabel(job)}</span>
         </div>
         <div className="mt-4 grid gap-3">
           {stages.map((stage, index) => {
@@ -455,14 +474,14 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                   : "text-slate-400 dark:text-slate-600";
 
             return (
-              <div key={stage} className="grid grid-cols-[20px_1fr] gap-2 text-sm">
-                <span className={`pt-0.5 font-semibold ${iconClass}`}>{icon}</span>
+              <div key={stage} className="grid grid-cols-[24px_1fr] gap-2 text-sm">
+                <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border text-[11px] font-semibold ${iconClass} ${isCurrent ? "border-blue-300 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/40" : "border-lane bg-white dark:border-slate-800 dark:bg-slate-950"}`}>{icon}</span>
                 <div className="min-w-0">
                   <span className={isCurrent ? "font-semibold" : "text-slate-700 dark:text-slate-300"}>{stageNames[stage]}</span>
                   {isCurrent ? (
                     <div className="mt-2">
-                      <div className="h-2 w-full overflow-hidden bg-lane dark:bg-slate-800">
-                        <div className="h-full bg-accent" style={{ width: `${Math.max(0, Math.min(100, job?.progress ?? 0))}%` }} />
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-lane dark:bg-slate-800">
+                        <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.max(0, Math.min(100, job?.progress ?? 0))}%` }} />
                       </div>
                       <div className="mt-1 flex items-start justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
                         <span>{job?.status_message}</span>
@@ -482,12 +501,12 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         {job?.status === "failed" ? <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">Failed after {formatElapsed(displayElapsed)}</p> : null}
 
         {job?.status === "failed" ? (
-          <div className="mt-4 border border-danger p-3 text-sm dark:bg-red-950/30">
+          <div className="mt-4 rounded-md border border-danger bg-red-50 p-3 text-sm dark:bg-red-950/30">
             <p className="font-semibold text-danger">Pipeline Failed</p>
             <p className="mt-1 text-slate-700 dark:text-slate-300">Failed at: {stageNames[failedStage] ?? failedStage}</p>
             <p className="mt-2 whitespace-pre-wrap break-words text-danger">{job.error_detail}</p>
             <button
-              className="mt-3 border border-danger px-3 py-2 text-sm font-semibold text-danger disabled:opacity-50"
+              className="button-danger mt-3"
               disabled={busy || !(job.source_path || sourcePath)}
               onClick={() => void start(job.source_path ?? sourcePath)}
               type="button"
@@ -520,10 +539,10 @@ function TrimSlider({
     <label className="grid gap-1">
       <span className="flex items-center justify-between gap-3">
         <span className="font-medium">{label}</span>
-        <span className="text-xs text-slate-500 dark:text-slate-400">{value.toFixed(step >= 1 ? 0 : 1)}s</span>
+        <span className="chip chip-neutral min-h-6 px-2 py-0.5">{value.toFixed(step >= 1 ? 0 : 1)}s</span>
       </span>
       <input
-        className="accent-blue-600"
+        className="h-2 cursor-pointer accent-blue-600"
         max={max}
         min={min}
         onChange={(event) => onChange(Number(event.target.value))}

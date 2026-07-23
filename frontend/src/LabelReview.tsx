@@ -123,10 +123,11 @@ function statusLabel(status: ReviewStatus) {
 
 function statusClass(status: ReviewStatus, active: boolean) {
   const activeClass = active ? " ring-2 ring-accent" : "";
-  if (status === "approved") return `border-emerald-500 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100${activeClass}`;
-  if (status === "check") return `border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100${activeClass}`;
-  if (status === "skip") return `border-slate-400 bg-slate-200 text-slate-700 opacity-80 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300${activeClass}`;
-  return `border-sky-500 bg-sky-50 text-sky-950 dark:bg-sky-950/30 dark:text-sky-100${activeClass}`;
+  const base = "rounded-md transition hover:shadow-sm";
+  if (status === "approved") return `${base} border-emerald-500 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100${activeClass}`;
+  if (status === "check") return `${base} border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100${activeClass}`;
+  if (status === "skip") return `${base} border-slate-400 bg-slate-200 text-slate-700 opacity-80 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300${activeClass}`;
+  return `${base} border-sky-500 bg-sky-50 text-sky-950 dark:bg-sky-950/30 dark:text-sky-100${activeClass}`;
 }
 function clampPct(value: number) {
   return Math.max(0, Math.min(100, value));
@@ -342,7 +343,7 @@ export function LabelReview() {
 
   if (error && !payload) {
     return (
-      <section className="border border-danger bg-white p-4 text-sm text-danger dark:bg-slate-900">
+      <section className="surface-panel border-danger p-4 text-sm text-danger">
         {error}
       </section>
     );
@@ -350,7 +351,7 @@ export function LabelReview() {
 
   if (!payload || !record || !fields) {
     return (
-      <section className="border border-lane bg-white p-4 text-sm dark:border-slate-800 dark:bg-slate-900">
+      <section className="surface-panel p-4 text-sm text-slate-600 dark:text-slate-400">
         Loading label review data...
       </section>
     );
@@ -368,15 +369,19 @@ export function LabelReview() {
 
   return (
     <section className="grid gap-4">
-      <div className="border border-lane bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+      <div className="surface-panel p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold">Training Label Review</h2>
-            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-              {payload.summary.approved} approved / {payload.summary.total} total, {payload.summary.needs_review} need review, {payload.summary.skipped ?? 0} skipped
-            </p>
+            <p className="section-kicker">Model training data</p>
+            <h2 className="section-title mt-1">Training Label Review</h2>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="chip chip-success">{payload.summary.approved} approved</span>
+              <span className="chip chip-neutral">{payload.summary.total} total</span>
+              <span className="chip chip-warning">{payload.summary.needs_review} need review</span>
+              <span className="chip chip-neutral">{payload.summary.skipped ?? 0} skipped</span>
+            </div>
           </div>
-          <label className="flex items-center gap-2 text-sm font-medium">
+          <label className="flex items-center gap-2 rounded-md border border-lane bg-slate-50 px-3 py-2 text-sm font-medium dark:border-slate-800 dark:bg-slate-950">
             <input
               type="checkbox"
               checked={showNeedsReviewOnly}
@@ -388,10 +393,10 @@ export function LabelReview() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_360px]">
-        <aside className="border border-lane bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+        <aside className="surface-panel p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">Review Queue</h3>
-            <span className="text-xs text-slate-500 dark:text-slate-400">{payload.records.length}</span>
+            <span className="chip chip-neutral min-h-6 px-2 py-0.5">{payload.records.length}</span>
           </div>
           <div className="max-h-[70vh] overflow-y-auto pr-1">
             <div className="grid gap-2">
@@ -419,32 +424,32 @@ export function LabelReview() {
           </div>
         </aside>
         <div className="grid gap-4">
-          <div className="border border-lane bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+          <div className="surface-panel p-3">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm">
               <div className="min-w-0">
                 <p className="break-all font-semibold">{record.filename}</p>
                 <p className="break-all text-xs text-slate-500 dark:text-slate-400">Edit: {record.edit_filename}</p>
                 <p className="break-all text-xs text-slate-500 dark:text-slate-400">Raw: {record.raw_path}</p>
               </div>
-              <span className="shrink-0 border border-lane px-2 py-1 text-xs dark:border-slate-700">
+              <span className="chip chip-neutral shrink-0">
                 {activePosition + 1} / {visibleIndexes.length} | record {activeIndex + 1}
               </span>
             </div>
             <video
               key={`${activeIndex}:${record.raw_path}`}
               ref={rawVideoRef}
-              className="aspect-video w-full bg-black"
+              className="aspect-video w-full rounded-md bg-black"
               controls
               preload="metadata"
               src={videoUrl(record.raw_path)}
             />
             <div className="mt-3 grid gap-2">
-              <div className="relative h-8 bg-slate-200 dark:bg-slate-800">
-                <div className="absolute top-0 h-8 bg-sky-400/50" style={{ left: `${clipLeft}%`, width: `${clipWidth}%` }} />
+              <div className="relative h-9 overflow-hidden rounded-md bg-slate-200 dark:bg-slate-800">
+                <div className="absolute top-0 h-9 bg-sky-400/50" style={{ left: `${clipLeft}%`, width: `${clipWidth}%` }} />
                 {fightSegmentValues.map((segment, index) => (
                   <div
                     key={`${index}:${segment.start}:${segment.end}`}
-                    className="absolute top-1 h-6 bg-red-500/70"
+                    className="absolute top-1 h-7 rounded-sm bg-red-500/70"
                     style={{
                       left: `${clampPct((segment.start / duration) * 100)}%`,
                       width: `${clampPct(((segment.end - segment.start) / duration) * 100)}%`
@@ -453,24 +458,25 @@ export function LabelReview() {
                 ))}
               </div>
               <div className="flex flex-wrap gap-2">
-                <button className="border border-lane px-3 py-2 text-sm font-semibold dark:border-slate-700" onClick={() => previewRawVideo(numberFromField(fields.clip_start))}>
+                <button className="button" onClick={() => previewRawVideo(numberFromField(fields.clip_start))}>
                   Play Clip Start
                 </button>
-                <button className="border border-lane px-3 py-2 text-sm font-semibold dark:border-slate-700" onClick={() => previewRawVideo(firstFightStart)}>
+                <button className="button" onClick={() => previewRawVideo(firstFightStart)}>
                   Play Fight Start
                 </button>
-                <button className="border border-lane px-3 py-2 text-sm font-semibold dark:border-slate-700" onClick={() => previewRawVideo(lastFightEnd, 3)}>
+                <button className="button" onClick={() => previewRawVideo(lastFightEnd, 3)}>
                   Play Fight End
                 </button>
               </div>
             </div>
           </div>
 
-          <div className="border border-lane bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+          <div className="surface-panel p-3">
+            <p className="section-kicker mb-1">Comparison clip</p>
             <p className="mb-3 text-sm font-semibold">Edited Reference</p>
             <video
               key={`${activeIndex}:${record.edit_path}`}
-              className="aspect-video w-full bg-black"
+              className="aspect-video w-full rounded-md bg-black"
               controls
               preload="metadata"
               src={videoUrl(record.edit_path)}
@@ -479,13 +485,13 @@ export function LabelReview() {
           </div>
         </div>
 
-        <aside className="border border-lane bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-          <div className="grid grid-cols-2 gap-3">
+        <aside className="surface-panel self-start p-4 xl:sticky xl:top-24">
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3">
             {(["clip_start", "clip_end"] as const).map((key) => (
-              <label key={key} className="grid gap-1 text-sm font-medium">
+              <label key={key} className="field-label">
                 {key.replace("_", " ")}
                 <input
-                  className="border border-lane bg-white px-3 py-2 outline-none focus:border-accent dark:border-slate-700 dark:bg-slate-950"
+                  className="input-field"
                   inputMode="decimal"
                   value={fields[key]}
                   onChange={(event) => updateField(key, event.target.value)}
@@ -494,11 +500,11 @@ export function LabelReview() {
             ))}
           </div>
 
-          <div className="mt-4 border-t border-lane pt-4 dark:border-slate-800">
+          <div className="divider mt-4 pt-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="text-sm font-semibold">Fight Segments</h3>
               <button
-                className="border border-lane px-2 py-1 text-xs font-semibold dark:border-slate-700"
+                className="button min-h-8 px-2 py-1 text-xs"
                 onClick={addFightSegment}
                 type="button"
               >
@@ -507,11 +513,11 @@ export function LabelReview() {
             </div>
             <div className="grid gap-3">
               {fields.fight_segments.map((segment, index) => (
-                <div key={index} className="border border-lane p-2 dark:border-slate-700">
+                <div key={index} className="rounded-md border border-lane bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-950">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold">Fight {index + 1}</span>
                     <button
-                      className="border border-danger px-2 py-1 text-xs font-semibold text-danger disabled:opacity-40"
+                      className="button-danger min-h-8 px-2 py-1 text-xs"
                       disabled={fields.fight_segments.length <= 1}
                       onClick={() => removeFightSegment(index)}
                       type="button"
@@ -519,20 +525,20 @@ export function LabelReview() {
                       Remove
                     </button>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="grid gap-1 text-xs font-medium">
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
+                    <label className="grid gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
                       start
                       <input
-                        className="border border-lane bg-white px-2 py-2 text-sm outline-none focus:border-accent dark:border-slate-700 dark:bg-slate-950"
+                        className="input-field px-2"
                         inputMode="decimal"
                         value={segment.start}
                         onChange={(event) => updateFightSegment(index, "start", event.target.value)}
                       />
                     </label>
-                    <label className="grid gap-1 text-xs font-medium">
+                    <label className="grid gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
                       end
                       <input
-                        className="border border-lane bg-white px-2 py-2 text-sm outline-none focus:border-accent dark:border-slate-700 dark:bg-slate-950"
+                        className="input-field px-2"
                         inputMode="decimal"
                         value={segment.end}
                         onChange={(event) => updateFightSegment(index, "end", event.target.value)}
@@ -544,7 +550,7 @@ export function LabelReview() {
             </div>
           </div>
 
-          <dl className="mt-4 grid gap-2 text-sm">
+          <dl className="mt-4 grid gap-2 rounded-md border border-lane bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-950">
             <div className="flex justify-between gap-3">
               <dt className="text-slate-500 dark:text-slate-400">Match</dt>
               <dd className="text-right font-semibold">{record.match.confidence}</dd>
@@ -563,35 +569,35 @@ export function LabelReview() {
             </div>
           </dl>
 
-          <label className="mt-4 grid gap-1 text-sm font-medium">
+          <label className="field-label mt-4">
             Review note
             <textarea
-              className="min-h-24 border border-lane bg-white px-3 py-2 outline-none focus:border-accent dark:border-slate-700 dark:bg-slate-950"
+              className="textarea-field"
               value={fields.review_note}
               onChange={(event) => updateField("review_note", event.target.value)}
             />
           </label>
 
-          {error ? <p className="mt-3 border border-danger p-3 text-sm text-danger dark:bg-red-950/30">{error}</p> : null}
+          {error ? <p className="mt-3 rounded-md border border-danger bg-red-50 p-3 text-sm text-danger dark:bg-red-950/30">{error}</p> : null}
           {status ? <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">{status}</p> : null}
 
           <div className="mt-4 grid grid-cols-2 gap-2">
-            <button className="border border-lane px-3 py-2 text-sm font-semibold dark:border-slate-700" onClick={() => move(-1)}>
+            <button className="button" onClick={() => move(-1)}>
               Previous
             </button>
-            <button className="border border-lane px-3 py-2 text-sm font-semibold dark:border-slate-700" onClick={() => move(1)}>
+            <button className="button" onClick={() => move(1)}>
               Next
             </button>
-            <button className="col-span-2 border border-lane px-3 py-2 text-sm font-semibold dark:border-slate-700" onClick={() => void findClipStart()}>
+            <button className="button col-span-2" onClick={() => void findClipStart()}>
               Find Clip Start
             </button>
-            <button className="border border-amber-500 px-3 py-2 text-sm font-semibold text-amber-700 dark:text-amber-300" onClick={() => void skipRecord()}>
+            <button className="button-warning" onClick={() => void skipRecord()}>
               Skip
             </button>
-            <button className="border border-accent px-3 py-2 text-sm font-semibold text-accent" onClick={() => void save(false)}>
+            <button className="button" onClick={() => void save(false)}>
               Save
             </button>
-            <button className="bg-accent px-3 py-2 text-sm font-semibold text-white" onClick={() => void save(true)}>
+            <button className="button-primary" onClick={() => void save(true)}>
               Approve
             </button>
           </div>

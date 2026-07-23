@@ -17,30 +17,31 @@ function App() {
   }, [darkMode]);
 
   return (
-    <main className="min-h-screen bg-panel text-ink transition-colors dark:bg-slate-950 dark:text-slate-100">
-      <header className="border-b border-lane bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4">
-          <div>
-            <h1 className="text-xl font-semibold tracking-normal">LoL Clip Pipeline</h1>
-            <p className="text-sm text-slate-600 dark:text-slate-400">Fight detection and adaptive 3:4 crop.</p>
+    <main className="app-page">
+      <header className="app-header sticky top-0 z-20">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-4">
+          <div className="min-w-0">
+            <p className="section-kicker">Local creator tool</p>
+            <h1 className="text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">LoL Clip Pipeline</h1>
+            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Fight detection, adaptive vertical crop, review, and publishing.</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              className={`border px-3 py-2 text-sm font-semibold ${activeView === "jobs" ? "border-accent text-accent" : "border-lane text-slate-700 dark:border-slate-700 dark:text-slate-200"}`}
+              className={activeView === "jobs" ? "button-primary" : "button"}
               onClick={() => setActiveView("jobs")}
               type="button"
             >
               Jobs
             </button>
             <button
-              className={`border px-3 py-2 text-sm font-semibold ${activeView === "labels" ? "border-accent text-accent" : "border-lane text-slate-700 dark:border-slate-700 dark:text-slate-200"}`}
+              className={activeView === "labels" ? "button-primary" : "button"}
               onClick={() => setActiveView("labels")}
               type="button"
             >
               Label Review
             </button>
             <button
-              className="border border-lane px-3 py-2 text-sm font-semibold text-slate-700 hover:border-accent dark:border-slate-700 dark:text-slate-200 dark:hover:border-accent"
+              className="button"
               onClick={() => setDarkMode((value) => !value)}
               type="button"
               aria-label="Toggle dark mode"
@@ -52,7 +53,7 @@ function App() {
       </header>
 
       {activeView === "jobs" ? (
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-5 py-5 lg:grid-cols-[360px_1fr]">
+        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-5 px-5 py-5 lg:grid-cols-[380px_minmax(0,1fr)]">
           <JobDashboard onSelectJob={setSelectedJob} selectedJob={selectedJob} />
           <section className="grid min-w-0 gap-4">
             <OutputPanel job={selectedJob} />
