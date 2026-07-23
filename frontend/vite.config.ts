@@ -11,6 +11,7 @@ export default defineConfig({
       "/train": "http://127.0.0.1:8000",
       "/training": "http://127.0.0.1:8000",
       "/outputs": "http://127.0.0.1:8000",
+      "/output-files": "http://127.0.0.1:8000",
       "/tiktok": "http://127.0.0.1:8000"
     }
   }

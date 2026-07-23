@@ -4,14 +4,14 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import config, models
@@ -26,6 +26,7 @@ from .label_review import (
     validated_video_path,
 )
 from .pipeline import ClipPipeline
+from .fight_detector import TrimSettings
 from .tiktok import TikTokError, TikTokPostOptions
 from . import tiktok
 from .trainer import TrainingCoordinator
@@ -43,9 +44,8 @@ app.add_middleware(
 )
 
 config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/outputs", StaticFiles(directory=str(config.OUTPUT_DIR)), name="outputs")
 
-job_semaphore = asyncio.Semaphore(2)
+job_semaphore = asyncio.Semaphore(1)
 pipeline: ClipPipeline | None = None
 trainer = TrainingCoordinator()
 
@@ -76,12 +76,94 @@ class TikTokPostRequest(BaseModel):
     is_aigc: bool = False
 
 
+class TrimSettingsRequest(BaseModel):
+    fight_start_preroll_sec: float = config.FIGHT_START_PREROLL_SEC
+    output_context_padding_sec: float = config.OUTPUT_CONTEXT_PADDING_SEC
+    combat_event_end_padding_sec: float = config.COMBAT_EVENT_END_PADDING_SEC
+    max_pre_fight_lead_sec: float = config.MAX_PRE_FIGHT_LEAD_SEC
+    min_clip_duration_sec: float = config.COMBAT_EVENT_MIN_CLIP_DURATION_SEC
+
+    def to_trim_settings(self) -> TrimSettings:
+        return TrimSettings(
+            fight_start_preroll_sec=_clamp_float(self.fight_start_preroll_sec, 0.0, 6.0),
+            output_context_padding_sec=_clamp_float(self.output_context_padding_sec, 0.0, 5.0),
+            combat_event_end_padding_sec=_clamp_float(self.combat_event_end_padding_sec, 0.0, 8.0),
+            max_pre_fight_lead_sec=_clamp_float(self.max_pre_fight_lead_sec, 0.0, 8.0),
+            min_clip_duration_sec=_clamp_float(self.min_clip_duration_sec, 5.0, 45.0),
+        )
+
+
+def _clamp_float(value: object, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = minimum
+    return max(minimum, min(maximum, number))
+
+
 def _normalize_source_path(value: object) -> Path:
     raw = str(value or "").strip()
     quote_pairs = {('"', '"'), ("'", "'")}
     while len(raw) >= 2 and (raw[0], raw[-1]) in quote_pairs:
         raw = raw[1:-1].strip()
     return Path(raw)
+
+
+def _resolve_output_path(relative_path: str) -> Path:
+    root = config.OUTPUT_DIR.resolve()
+    candidate = (root / relative_path).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Output file not found")
+    return candidate
+
+
+def _stream_video_with_range(video_path: Path, request: Request) -> StreamingResponse:
+    file_size = video_path.stat().st_size
+    range_header = request.headers.get("range")
+    start = 0
+    end = file_size - 1
+    status_code = 200
+
+    if range_header:
+        units, _, raw_range = range_header.partition("=")
+        if units.strip().lower() != "bytes" or "-" not in raw_range:
+            raise HTTPException(status_code=416, detail="Invalid range header")
+        raw_start, raw_end = raw_range.split("-", 1)
+        try:
+            if raw_start:
+                start = int(raw_start)
+                end = int(raw_end) if raw_end else file_size - 1
+            elif raw_end:
+                suffix_length = int(raw_end)
+                start = max(0, file_size - suffix_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=416, detail="Invalid range header") from exc
+        if start > end or start >= file_size:
+            raise HTTPException(status_code=416, detail="Requested range not satisfiable")
+        end = min(end, file_size - 1)
+        status_code = 206
+
+    content_length = end - start + 1
+
+    def iter_file():
+        with video_path.open("rb") as handle:
+            handle.seek(start)
+            remaining = content_length
+            while remaining > 0:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Content-Type": "video/mp4",
+    }
+    if status_code == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    return StreamingResponse(iter_file(), status_code=status_code, media_type="video/mp4", headers=headers)
 
 
 @app.on_event("startup")
@@ -92,6 +174,7 @@ async def startup() -> None:
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     await models.init_db(config.DB_PATH)
+    await models.mark_interrupted_jobs_failed(config.DB_PATH)
     pipeline = ClipPipeline(config.DB_PATH)
 
 
@@ -175,19 +258,57 @@ async def create_job(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=422, detail="Only .mp4 uploads are supported")
     upload_dir = config.APPDATA_DIR / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    source_path = upload_dir / Path(file.filename).name
+    job_id = str(uuid.uuid4())
+    source_path = upload_dir / f"{job_id}-{Path(file.filename).name}"
     with source_path.open("wb") as handle:
         while chunk := await file.read(1024 * 1024):
             handle.write(chunk)
+    await models.create_job(config.DB_PATH, job_id, str(source_path))
 
     async def run_background() -> None:
         async with job_semaphore:
             await asyncio.to_thread(
-                lambda: asyncio.run(pipeline.run(source_path))
+                lambda: asyncio.run(pipeline.run(source_path, job_id))
             )
 
     asyncio.create_task(run_background())
-    return {"accepted": True, "source_path": str(source_path)}
+    return {"accepted": True, "job_id": job_id, "source_path": str(source_path)}
+
+
+@app.get("/jobs")
+async def list_jobs(limit: int = 50) -> dict:
+    return {"jobs": await models.list_jobs(config.DB_PATH, limit=limit)}
+
+
+@app.get("/output-files")
+async def list_output_files(limit: int = 50) -> dict:
+    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    safe_limit = max(1, min(limit, 200))
+    files = []
+    for path in config.OUTPUT_DIR.glob("*.mp4"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append(
+            {
+                "filename": path.name,
+                "path": str(path),
+                "url": f"/outputs/{path.name}",
+                "size": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            }
+        )
+    files.sort(key=lambda item: item["modified_at"], reverse=True)
+    return {"output_dir": str(config.OUTPUT_DIR), "files": files[:safe_limit]}
+
+
+@app.get("/outputs/{relative_path:path}")
+async def output_file(relative_path: str, request: Request):
+    output_path = _resolve_output_path(relative_path)
+    if output_path.suffix.lower() != ".mp4":
+        return FileResponse(output_path)
+    return _stream_video_with_range(output_path, request)
 
 
 @app.get("/jobs/{job_id}")
@@ -205,6 +326,7 @@ async def process_existing(payload: dict) -> dict:
             status_code=503, detail="Pipeline not ready"
         )
     source_path = _normalize_source_path(payload.get("source_path", ""))
+    trim_settings = TrimSettingsRequest(**(payload.get("trim_settings") or {})).to_trim_settings()
 
     # Validate input before starting background task
     try:
@@ -227,7 +349,7 @@ async def process_existing(payload: dict) -> dict:
     async def run_background() -> None:
         async with job_semaphore:
             await asyncio.to_thread(
-                lambda: asyncio.run(pipeline.run(source_path, job_id))
+                lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings))
             )
 
     asyncio.create_task(run_background())
@@ -288,47 +410,5 @@ async def regenerate_training_labels() -> dict:
 @app.get("/training/video")
 async def training_review_video(path: str, request: Request) -> StreamingResponse:
     video_path = validated_video_path(path)
-    file_size = video_path.stat().st_size
-    range_header = request.headers.get("range")
-    start = 0
-    end = file_size - 1
-    status_code = 200
-
-    if range_header:
-        units, _, raw_range = range_header.partition("=")
-        if units.strip().lower() != "bytes" or "-" not in raw_range:
-            raise HTTPException(status_code=416, detail="Invalid range header")
-        raw_start, raw_end = raw_range.split("-", 1)
-        if raw_start:
-            start = int(raw_start)
-            end = int(raw_end) if raw_end else file_size - 1
-        elif raw_end:
-            suffix_length = int(raw_end)
-            start = max(0, file_size - suffix_length)
-        if start > end or start >= file_size:
-            raise HTTPException(status_code=416, detail="Requested range not satisfiable")
-        end = min(end, file_size - 1)
-        status_code = 206
-
-    content_length = end - start + 1
-
-    def iter_file():
-        with video_path.open("rb") as handle:
-            handle.seek(start)
-            remaining = content_length
-            while remaining > 0:
-                chunk = handle.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
-
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(content_length),
-        "Content-Type": "video/mp4",
-    }
-    if status_code == 206:
-        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-    return StreamingResponse(iter_file(), status_code=status_code, media_type="video/mp4", headers=headers)
+    return _stream_video_with_range(video_path, request)
 

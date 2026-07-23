@@ -15,6 +15,7 @@ from .cropper import AdaptiveCropper
 from .encoder import EncoderError, VideoEncoder
 from .fight_detector import (
     FightDetector,
+    TrimSettings,
     add_output_context,
     apply_dialog_extension,
     boundaries_from_scores,
@@ -79,12 +80,14 @@ class ClipPipeline:
         self.cropper = AdaptiveCropper()
         self.encoder = VideoEncoder()
 
-    async def run(self, source_path: Path, job_id: str | None = None) -> str:
+    async def run(self, source_path: Path, job_id: str | None = None, trim_settings: TrimSettings | None = None) -> str:
+        settings = trim_settings or TrimSettings()
         job_id = job_id or uuid.uuid4().hex
         db_path = self.db_path
         flags: list[str] = []
         current_stage = "queued"
-        await models.create_job(db_path, job_id, source_path)
+        if await models.get_job(db_path, job_id) is None:
+            await models.create_job(db_path, job_id, source_path)
         try:
             validation = validate_input(source_path)
             if not validation.has_audio:
@@ -179,7 +182,7 @@ class ClipPipeline:
                 "Loading VideoMAE fight detector...",
             )
             scores = self.fight_detector.score_windows(bundle.full_frames, bundle.timestamps_full)
-            fight_start, fight_end, fight_flags = boundaries_from_scores(scores, validation.duration)
+            fight_start, fight_end, fight_flags = boundaries_from_scores(scores, validation.duration, settings)
             await update_job_progress(
                 db_path,
                 job_id,
@@ -194,8 +197,9 @@ class ClipPipeline:
                 bundle.full_frames,
                 bundle.timestamps_full,
                 validation.duration,
+                settings,
             )
-            trim = add_output_context(trim, validation.duration)
+            trim = add_output_context(trim, validation.duration, settings)
             player_champion, player_champion_score = _detect_player_champion(
                 self.minimap_detector,
                 bundle.full_frames,

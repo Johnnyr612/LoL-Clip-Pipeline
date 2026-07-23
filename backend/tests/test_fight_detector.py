@@ -9,6 +9,7 @@ from backend.fight_detector import (
     DialogSegment,
     FightDetector,
     TrimResult,
+    TrimSettings,
     add_output_context,
     apply_dialog_extension,
     boundaries_from_scores,
@@ -29,8 +30,23 @@ def test_highlight_no_merge():
 
 def test_low_confidence_fallback():
     start, end, flags = boundaries_from_scores([0.0] * 60, 60)
-    assert (start, end) == (4.0, 56.0)
+    assert (start, end) == (25.0, 35.0)
     assert "low_confidence" in flags
+
+
+def test_custom_trim_settings_control_fight_start_preroll():
+    scores = [0.0] * 60
+    scores[10:18] = [0.8] * 8
+
+    default_start, _default_end, _default_flags = boundaries_from_scores(scores, 60)
+    custom_start, _custom_end, _custom_flags = boundaries_from_scores(
+        scores,
+        60,
+        TrimSettings(fight_start_preroll_sec=3.0),
+    )
+
+    assert default_start == 8.5
+    assert custom_start == 7.0
 
 
 def test_dialog_extension_pre():
@@ -48,7 +64,7 @@ def test_max_duration_clamp():
     assert result.clip_end - result.clip_start == config.MAX_CLIP_DURATION
 
 
-def test_finish_on_kill_or_death_ignores_event_before_conservative_minimum():
+def test_finish_on_kill_or_death_ends_on_confirmed_event_with_padding():
     frames = np.zeros((38, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(38, dtype=np.float32)
     for idx in range(34):
@@ -60,12 +76,13 @@ def test_finish_on_kill_or_death_ignores_event_before_conservative_minimum():
     trim = TrimResult(clip_start=0, clip_end=20, fight_start=1, fight_end=20, fight_duration=19, dialog_segments=[], flags=[])
     result = finish_on_kill_or_death(trim, frames, timestamps, 40)
 
-    assert result.clip_end == 40.0
-    assert "kill_event_detected" not in result.flags
-    assert "combat_event_not_confirmed_extended_to_target" in result.flags
+    assert result.clip_end == 37.0
+    assert result.fight_end == 34.0
+    assert "kill_event_detected" in result.flags
+    assert "clip_end_on_kill_or_death" in result.flags
 
 
-def test_finish_on_kill_or_death_keeps_target_window_after_late_event():
+def test_finish_on_kill_or_death_does_not_force_conservative_target_window():
     frames = np.zeros((60, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(60, dtype=np.float32)
     for idx in range(46):
@@ -77,9 +94,11 @@ def test_finish_on_kill_or_death_keeps_target_window_after_late_event():
     trim = TrimResult(clip_start=0, clip_end=20, fight_start=1, fight_end=20, fight_duration=19, dialog_segments=[], flags=[])
     result = finish_on_kill_or_death(trim, frames, timestamps, 60)
 
-    assert result.clip_end == 52.0
+    assert result.clip_end == 49.0
+    assert result.fight_end == 46.0
     assert "kill_event_detected" in result.flags
-    assert "conservative_full_fight_trim" in result.flags
+    assert "clip_end_on_kill_or_death" in result.flags
+    assert "conservative_full_fight_trim" not in result.flags
 
 
 def test_finish_on_kill_or_death_ignores_early_healthbar_flicker():
@@ -92,7 +111,7 @@ def test_finish_on_kill_or_death_ignores_early_healthbar_flicker():
     trim = TrimResult(clip_start=0, clip_end=20, fight_start=1, fight_end=20, fight_duration=19, dialog_segments=[], flags=[])
     result = finish_on_kill_or_death(trim, frames, timestamps, 40)
 
-    assert result.clip_end == 40.0
+    assert result.clip_end == 20.0
     assert "kill_event_detected" not in result.flags
     assert "combat_event_not_confirmed_extended_to_target" in result.flags
 
@@ -109,18 +128,29 @@ def test_finish_on_kill_or_death_preserves_overlapping_dialog():
     trim = TrimResult(clip_start=0, clip_end=20, fight_start=1, fight_end=20, fight_duration=19, dialog_segments=[DialogSegment("wait", 34.5, 36.5)], flags=[])
     result = finish_on_kill_or_death(trim, frames, timestamps, 40)
 
-    assert result.clip_end == 40.0
+    assert result.clip_end == 37.0
+    assert "clip_end_on_kill_or_death" in result.flags
 
 
 def test_add_output_context_adds_padding_without_moving_fight_markers():
     trim = TrimResult(clip_start=10, clip_end=38, fight_start=12, fight_end=36, fight_duration=24, dialog_segments=[], flags=[])
     result = add_output_context(trim, 60)
 
-    assert result.clip_start == 6.0
-    assert result.clip_end == 42.0
+    assert result.clip_start == 9.5
+    assert result.clip_end == 39.5
     assert result.fight_start == 12
     assert result.fight_end == 36
     assert "output_context_padding_applied" in result.flags
+    assert "pre_fight_lead_capped" in result.flags
+
+
+def test_custom_trim_settings_can_tighten_pre_fight_lead():
+    trim = TrimResult(clip_start=10, clip_end=38, fight_start=12, fight_end=36, fight_duration=24, dialog_segments=[], flags=[])
+    result = add_output_context(trim, 60, TrimSettings(output_context_padding_sec=1.5, max_pre_fight_lead_sec=1.0))
+
+    assert result.clip_start == 11.0
+    assert result.clip_end == 39.5
+    assert "pre_fight_lead_capped" in result.flags
 
 
 def test_estimate_visible_enemy_count():

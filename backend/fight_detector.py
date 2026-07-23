@@ -23,6 +23,18 @@ class DialogSegment:
 
 
 @dataclass(frozen=True)
+class TrimSettings:
+    fight_start_preroll_sec: float = config.FIGHT_START_PREROLL_SEC
+    output_context_padding_sec: float = config.OUTPUT_CONTEXT_PADDING_SEC
+    combat_event_end_padding_sec: float = config.COMBAT_EVENT_END_PADDING_SEC
+    max_pre_fight_lead_sec: float = config.MAX_PRE_FIGHT_LEAD_SEC
+    min_clip_duration_sec: float = config.COMBAT_EVENT_MIN_CLIP_DURATION_SEC
+    target_clip_duration_sec: float = config.COMBAT_EVENT_TARGET_CLIP_DURATION_SEC
+    max_clip_duration_sec: float = config.MAX_CLIP_DURATION
+    conservative_full_fight_trim: bool = config.CONSERVATIVE_FULL_FIGHT_TRIM
+
+
+@dataclass(frozen=True)
 class TrimResult:
     clip_start: float
     clip_end: float
@@ -72,11 +84,16 @@ def _walk_boundary(
     return last_good
 
 
-def boundaries_from_scores(scores: Sequence[float], source_duration: float) -> tuple[float, float, list[str]]:
+def boundaries_from_scores(
+    scores: Sequence[float],
+    source_duration: float,
+    trim_settings: TrimSettings | None = None,
+) -> tuple[float, float, list[str]]:
+    settings = trim_settings or TrimSettings()
     flags: list[str] = []
     if not scores or max(scores) < config.FIGHT_CONFIDENCE_THRESHOLD:
         center = source_duration / 2
-        fallback_duration = config.COMBAT_EVENT_TARGET_CLIP_DURATION_SEC if config.CONSERVATIVE_FULL_FIGHT_TRIM else 10.0
+        fallback_duration = settings.target_clip_duration_sec if settings.conservative_full_fight_trim else 10.0
         start = max(0.0, center - fallback_duration / 2)
         end = min(source_duration, start + fallback_duration)
         start = max(0.0, end - fallback_duration)
@@ -94,7 +111,7 @@ def boundaries_from_scores(scores: Sequence[float], source_duration: float) -> t
     )
     # Window index s scores the interval [s, s+16), so detection lags the true
     # engagement. Pull the start back to capture the approach/poke phase.
-    fight_start = max(0.0, float(left) - config.FIGHT_START_PREROLL_SEC)
+    fight_start = max(0.0, float(left) - settings.fight_start_preroll_sec)
     fight_end = float(right + 16.0)
     if fight_end - fight_start < config.FIGHT_MIN_DURATION:
         fight_end = fight_start + config.FIGHT_MIN_DURATION
@@ -155,10 +172,12 @@ def finish_on_kill_or_death(
     full_frames: np.ndarray,
     timestamps: np.ndarray,
     source_duration: float,
+    trim_settings: TrimSettings | None = None,
 ) -> TrimResult:
-    min_clip_end = min(source_duration, trim.clip_start + config.COMBAT_EVENT_MIN_CLIP_DURATION_SEC)
-    target_clip_end = min(source_duration, trim.clip_start + config.COMBAT_EVENT_TARGET_CLIP_DURATION_SEC)
-    max_clip_end = min(source_duration, trim.clip_start + config.MAX_CLIP_DURATION)
+    settings = trim_settings or TrimSettings()
+    min_clip_end = min(source_duration, trim.clip_start + settings.min_clip_duration_sec)
+    target_clip_end = min(source_duration, trim.clip_start + settings.target_clip_duration_sec)
+    max_clip_end = min(source_duration, trim.clip_start + settings.max_clip_duration_sec)
     event_time, event_flag = _detect_combat_event_time(
         full_frames,
         timestamps,
@@ -170,7 +189,7 @@ def finish_on_kill_or_death(
         # Without a confirmed kill/death, trust the detected fight end instead
         # of stretching every clip to a fixed target length. Conservative mode
         # restores the old always-extend behavior.
-        fallback_end = target_clip_end if config.CONSERVATIVE_FULL_FIGHT_TRIM else min_clip_end
+        fallback_end = target_clip_end if settings.conservative_full_fight_trim else min_clip_end
         clip_end = max(trim.clip_end, fallback_end)
         clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
         clip_end = min(clip_end, max_clip_end)
@@ -184,9 +203,9 @@ def finish_on_kill_or_death(
             flags=[*trim.flags, "combat_event_not_confirmed_extended_to_target"],
         )
 
-    clip_end = min(max_clip_end, event_time + config.COMBAT_EVENT_END_PADDING_SEC)
+    clip_end = min(max_clip_end, event_time + settings.combat_event_end_padding_sec)
     flags = [*trim.flags, event_flag, "clip_end_on_kill_or_death"]
-    if config.CONSERVATIVE_FULL_FIGHT_TRIM:
+    if settings.conservative_full_fight_trim:
         clip_end = max(clip_end, target_clip_end, trim.clip_end)
         flags.append("conservative_full_fight_trim")
     clip_end = _preserve_overlapping_dialog(trim.clip_start, clip_end, trim.dialog_segments, source_duration)
@@ -203,18 +222,23 @@ def finish_on_kill_or_death(
     )
 
 
-def add_output_context(trim: TrimResult, source_duration: float) -> TrimResult:
-    clip_start = max(0.0, trim.clip_start - config.OUTPUT_CONTEXT_PADDING_SEC)
-    clip_end = min(source_duration, trim.clip_end + config.OUTPUT_CONTEXT_PADDING_SEC)
+def add_output_context(
+    trim: TrimResult,
+    source_duration: float,
+    trim_settings: TrimSettings | None = None,
+) -> TrimResult:
+    settings = trim_settings or TrimSettings()
+    clip_start = max(0.0, trim.clip_start - settings.output_context_padding_sec)
+    clip_end = min(source_duration, trim.clip_end + settings.output_context_padding_sec)
     flags = [*trim.flags, "output_context_padding_applied"]
     # Hard cap on dead air before the fight: dialog extension, preroll, and
     # padding combined may not push the start further back than this.
-    earliest_start = max(0.0, trim.fight_start - config.MAX_PRE_FIGHT_LEAD_SEC)
+    earliest_start = max(0.0, trim.fight_start - settings.max_pre_fight_lead_sec)
     if clip_start < earliest_start:
         clip_start = earliest_start
         flags.append("pre_fight_lead_capped")
-    if clip_end - clip_start > config.MAX_CLIP_DURATION:
-        overflow = (clip_end - clip_start) - config.MAX_CLIP_DURATION
+    if clip_end - clip_start > settings.max_clip_duration_sec:
+        overflow = (clip_end - clip_start) - settings.max_clip_duration_sec
         front_room = trim.clip_start - clip_start
         back_room = clip_end - trim.clip_end
         # Trim the tail padding first; only eat into the front lead-in if
@@ -662,8 +686,19 @@ class FightDetector:
             logger.warning("Whisper transcription unavailable: %s", exc)
             return []
 
-    def detect(self, full_frames: np.ndarray, timestamps: np.ndarray, source_duration: float, audio_path: Path | None) -> TrimResult:
-        fight_start, fight_end, flags = boundaries_from_scores(self.score_windows(full_frames, timestamps), source_duration)
+    def detect(
+        self,
+        full_frames: np.ndarray,
+        timestamps: np.ndarray,
+        source_duration: float,
+        audio_path: Path | None,
+        trim_settings: TrimSettings | None = None,
+    ) -> TrimResult:
+        fight_start, fight_end, flags = boundaries_from_scores(
+            self.score_windows(full_frames, timestamps),
+            source_duration,
+            trim_settings,
+        )
         dialog = self.transcribe(audio_path)
         result = apply_dialog_extension(fight_start, fight_end, source_duration, dialog)
         return TrimResult(

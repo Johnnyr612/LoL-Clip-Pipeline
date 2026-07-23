@@ -12,6 +12,15 @@ export type JobRecord = {
   detection_debug?: string;
   created_at: string;
   updated_at: string;
+  history_only?: boolean;
+};
+
+export type OutputFile = {
+  filename: string;
+  path: string;
+  url: string;
+  size: number;
+  modified_at: string;
 };
 
 export type TrainingMetric = {

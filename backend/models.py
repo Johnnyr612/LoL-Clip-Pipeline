@@ -239,3 +239,37 @@ async def get_job(db_path: Path, job_id: str) -> dict[str, Any] | None:
         cursor = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
         row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+async def mark_interrupted_jobs_failed(db_path: Path) -> None:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """
+            UPDATE jobs
+            SET status = 'failed',
+                stage_failed = COALESCE(stage, 'queued'),
+                status_message = 'Interrupted by server restart',
+                error_detail = 'This job was queued or running when the backend restarted. Start it again to process the clip.',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status IN ('queued', 'running')
+            """
+        )
+        await db.commit()
+
+
+async def list_jobs(db_path: Path, limit: int = 50) -> list[dict[str, Any]]:
+    await init_db(db_path)
+    safe_limit = max(1, min(limit, 200))
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT * FROM jobs
+            ORDER BY datetime(created_at) DESC, rowid DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]

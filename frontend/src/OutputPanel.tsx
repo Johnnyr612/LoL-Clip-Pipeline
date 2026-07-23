@@ -69,7 +69,14 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         ) : null}
       </div>
       {outputUrl ? (
-        <video className="mt-4 aspect-[3/4] max-h-[640px] w-full bg-black object-contain" src={outputUrl} controls playsInline preload="metadata" />
+        <video
+          key={outputUrl}
+          className="mt-4 aspect-[3/4] max-h-[640px] w-full bg-black object-contain"
+          src={outputUrl}
+          controls
+          playsInline
+          preload="metadata"
+        />
       ) : (
         <div className="mt-4 flex aspect-[3/4] max-h-[640px] w-full items-center justify-center border border-lane bg-slate-50 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
           No completed clip selected
@@ -84,7 +91,7 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         disableComment={disableComment}
         disableDuet={disableDuet}
         disableStitch={disableStitch}
-        hasOutput={Boolean(job?.status === "complete" && outputUrl)}
+        hasOutput={Boolean(job?.id && !job.history_only && job.status === "complete" && outputUrl)}
         message={message}
         mode={mode}
         onConnect={() => {
