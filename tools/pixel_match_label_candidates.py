@@ -175,6 +175,8 @@ def _trainer_label(record: dict[str, Any]) -> dict[str, Any]:
         "filename": record["filename"],
         "raw_path": record.get("raw_path", ""),
         "edit_path": record.get("edit_path", ""),
+        "clip_start": record["clip_start"],
+        "clip_end": record["clip_end"],
         "fight_start": record["fight_start"],
         "fight_end": record["fight_end"],
         "fight_segments": record.get("fight_segments") or [[record["fight_start"], record["fight_end"]]],

@@ -1,1 +1,0 @@
-{"run_id": "3ace30ac7b8445f5ac8e7f240e9c8478", "slice": 0, "status": "running", "phase": "train", "epoch": 1, "epochs": 25, "batch": 90, "batches": 2080, "progress": 0.0017, "train_loss": 0.6863}

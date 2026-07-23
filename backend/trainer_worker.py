@@ -87,6 +87,23 @@ def _window_overlap_pct(start_second: int, segments: list[tuple[float, float]]) 
     return min(overlap / WINDOW_SECONDS, 1.0)
 
 
+def _clip_bounds(label: dict, duration: float) -> tuple[float, float] | None:
+    if "clip_start" not in label or "clip_end" not in label:
+        return None
+    clip_start = max(0.0, min(float(label.get("clip_start") or 0.0), duration))
+    clip_end = max(clip_start, min(float(label.get("clip_end") or duration), duration))
+    return clip_start, clip_end
+
+
+def _window_outside_posted_clip(start_second: int, clip_bounds: tuple[float, float] | None) -> bool:
+    if clip_bounds is None:
+        return False
+    window_start = float(start_second)
+    window_end = window_start + WINDOW_SECONDS
+    clip_start, clip_end = clip_bounds
+    return window_end <= clip_start or window_start >= clip_end
+
+
 def _resolve_clip_path(clips_dir: Path | None, label: dict) -> Path | None:
     raw_path = str(label.get("raw_path") or "").strip()
     if raw_path:
@@ -163,12 +180,15 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
                 or last_fight_end + WINDOW_SECONDS
             )
             total_seconds = max(WINDOW_SECONDS, int(np.ceil(float(duration_value))))
+            clip_bounds = _clip_bounds(label, float(duration_value))
 
             for start_second in range(0, max(0, total_seconds - WINDOW_SECONDS + 1)):
                 overlap_pct = _window_overlap_pct(start_second, fight_segments)
                 if overlap_pct >= POSITIVE_OVERLAP_THRESHOLD:
                     fight_samples.append((clip_path, start_second, 1))
-                elif overlap_pct < NEGATIVE_OVERLAP_THRESHOLD:
+                elif clip_bounds is None and overlap_pct < NEGATIVE_OVERLAP_THRESHOLD:
+                    non_fight_samples.append((clip_path, start_second, 0))
+                elif _window_outside_posted_clip(start_second, clip_bounds) and overlap_pct < NEGATIVE_OVERLAP_THRESHOLD:
                     non_fight_samples.append((clip_path, start_second, 0))
 
         rng = random.Random(42)

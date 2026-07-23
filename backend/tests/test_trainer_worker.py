@@ -29,6 +29,38 @@ def test_dataset_uses_raw_path_and_multiple_fight_segments(tmp_path) -> None:
     assert {sample[0] for sample in dataset.sample_index} == {raw_clip}
 
 
+def test_dataset_uses_posted_clip_bounds_for_strong_negatives(tmp_path) -> None:
+    raw_clip = tmp_path / "posted-selection.mp4"
+    raw_clip.write_bytes(b"")
+
+    dataset = trainer_worker.LoLFightDataset(
+        None,
+        [
+            {
+                "filename": raw_clip.name,
+                "raw_path": str(raw_clip),
+                "clip_start": 24.516,
+                "clip_end": 59.983,
+                "fight_segments": [[30.0, 47.0]],
+                "duration": 59.983,
+            }
+        ],
+    )
+
+    assert dataset.missing_labels == []
+    assert len(dataset) > 0
+    assert {sample[2] for sample in dataset.sample_index} == {0, 1}
+    negative_starts = [start for _path, start, label in dataset.sample_index if label == 0]
+    positive_starts = [start for _path, start, label in dataset.sample_index if label == 1]
+    assert negative_starts
+    assert positive_starts
+    assert all(start + trainer_worker.WINDOW_SECONDS <= 24.516 for start in negative_starts)
+    assert all(
+        trainer_worker._window_overlap_pct(start, [(30.0, 47.0)]) >= trainer_worker.POSITIVE_OVERLAP_THRESHOLD
+        for start in positive_starts
+    )
+
+
 def test_split_labels_holds_out_whole_source_groups() -> None:
     labels = [
         {"filename": f"clip-{index}.mp4", "raw_path": str(Path("D:/clips") / f"source-{index // 2}.mp4")}
