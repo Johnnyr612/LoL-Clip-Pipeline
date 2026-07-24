@@ -161,8 +161,17 @@ BLEND_NVN = (0.88, 0.12, 0.0)
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1440
 OUTPUT_FPS = 60
-FFMPEG_CRF = 23
-FFMPEG_PRESET = "fast"
+FFMPEG_MATCH_SOURCE_ENCODING = os.environ.get("LOL_CLIP_MATCH_SOURCE_ENCODING", "1").strip() != "0"
+FFMPEG_VIDEO_ENCODER = os.environ.get("LOL_CLIP_VIDEO_ENCODER", "libx264").strip() or "libx264"
+FFMPEG_CRF = int(os.environ.get("LOL_CLIP_FFMPEG_CRF", "18"))
+FFMPEG_PRESET = os.environ.get("LOL_CLIP_FFMPEG_PRESET", "slow").strip() or "slow"
+FFMPEG_NVENC_PRESET = os.environ.get("LOL_CLIP_NVENC_PRESET", "p5").strip() or "p5"
+FFMPEG_NVENC_RC = os.environ.get("LOL_CLIP_NVENC_RC", "vbr").strip() or "vbr"
+FFMPEG_NVENC_CQ = os.environ.get("LOL_CLIP_NVENC_CQ", "").strip()
+FFMPEG_VIDEO_BITRATE = os.environ.get("LOL_CLIP_VIDEO_BITRATE", "").strip()
+FFMPEG_VIDEO_MAXRATE = os.environ.get("LOL_CLIP_VIDEO_MAXRATE", "").strip()
+FFMPEG_VIDEO_BUFSIZE = os.environ.get("LOL_CLIP_VIDEO_BUFSIZE", "").strip()
+FFMPEG_AUDIO_BITRATE = os.environ.get("LOL_CLIP_AUDIO_BITRATE", "320k").strip() or "320k"
 CROP_QUANTIZE_THRESHOLD = 5
 
 VIDEOMAE_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_best.pt"

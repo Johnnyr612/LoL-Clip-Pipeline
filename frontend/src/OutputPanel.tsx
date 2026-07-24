@@ -89,6 +89,8 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         </div>
       )}
 
+      <MediaProfilePanel detectionDebug={detectionDebug} />
+
       <TikTokPanel
         busy={busy}
         connected={Boolean(tiktokStatus?.connected)}
@@ -119,6 +121,46 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
       />
 
       <ChampionDetectionPanel detectionDebug={detectionDebug} />
+    </section>
+  );
+}
+
+function MediaProfilePanel({ detectionDebug }: { detectionDebug: DetectionDebug }) {
+  const input = detectionDebug.media_profile?.input;
+  const output = detectionDebug.media_profile?.encode_settings;
+  if (!input && !output) return null;
+
+  return (
+    <section className="divider mt-6 pt-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="section-kicker">Media profile</p>
+          <h2 className="section-title mt-1">Input & Output Match</h2>
+        </div>
+        {output?.match_source_encoding ? <span className="chip chip-active">Source matching on</span> : null}
+      </div>
+      <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
+        <div className="surface-muted p-3">
+          <h3 className="text-sm font-semibold">Input MP4</h3>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            <span className="chip chip-neutral">{input?.video_codec?.toUpperCase() ?? "unknown codec"}</span>
+            <span className="chip chip-neutral">{input?.width ?? "?"}x{input?.height ?? "?"}</span>
+            <span className="chip chip-neutral">{formatFps(input?.fps)} FPS</span>
+            <span className="chip chip-neutral">{formatBitrate(input?.video_bitrate ?? input?.total_bitrate)}</span>
+            <span className="chip chip-neutral">Audio: {input?.has_audio ? (input.audio_codec?.toUpperCase() ?? "yes") : "none"}</span>
+          </div>
+        </div>
+        <div className="surface-muted p-3">
+          <h3 className="text-sm font-semibold">Output Encode</h3>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            <span className="chip chip-active">{output?.encoder ?? "encoder"}</span>
+            <span className="chip chip-neutral">{output?.output_width ?? "?"}x{output?.output_height ?? "?"}</span>
+            <span className="chip chip-neutral">{output?.fps ?? "?"} FPS</span>
+            <span className="chip chip-neutral">{output?.target_video_bitrate ?? (output?.crf ? `CRF ${output.crf}` : "auto bitrate")}</span>
+            <span className="chip chip-neutral">Preset: {output?.preset ?? "default"}</span>
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
@@ -313,6 +355,18 @@ function teamClass(team: DetectionDebugResult["team"]) {
   if (team === "enemy") return "chip-danger";
   if (team === "ally") return "chip-active";
   return "chip-warning";
+}
+
+function formatBitrate(value: number | null | undefined) {
+  if (!value || value <= 0) return "unknown bitrate";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)} Mbps`;
+  return `${Math.round(value / 1000)} kbps`;
+}
+
+function formatFps(value: number | null | undefined) {
+  if (!value || value <= 0) return "?";
+  const rounded = Math.round(value);
+  return Math.abs(value - rounded) < 0.05 ? String(rounded) : value.toFixed(2);
 }
 
 function safeJson<T>(value: string | undefined | null, fallback: T): T {

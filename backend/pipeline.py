@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -12,7 +9,7 @@ import numpy as np
 
 from . import config, models
 from .cropper import AdaptiveCropper
-from .encoder import EncoderError, VideoEncoder
+from .encoder import EncoderError, VideoEncoder, describe_encode_settings
 from .fight_detector import (
     FightDetector,
     TrimSettings,
@@ -24,6 +21,7 @@ from .fight_detector import (
     finish_on_kill_or_death,
 )
 from .frame_io import FrameDecodeError, decode_video
+from .media_probe import MediaProbeError, MediaProfile, probe_media_profile
 from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
 from .models import update_job_progress
 from .team_tracker import TeamTracker, clustered_indices, infer_team_from_border
@@ -34,6 +32,7 @@ from .vision_classifier import VisionFightResult, classify_fight_participants
 class ValidationResult:
     duration: float
     has_audio: bool
+    media_profile: MediaProfile
 
 
 class InputValidationError(ValueError):
@@ -43,33 +42,15 @@ class InputValidationError(ValueError):
 def validate_input(path: Path) -> ValidationResult:
     if not path.exists() or path.suffix.lower() != ".mp4":
         raise InputValidationError("Input must be an existing .mp4 file")
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        return ValidationResult(60.0, False)
-    result = subprocess.run(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration:stream=codec_type",
-            "-of",
-            "json",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise InputValidationError(result.stderr)
-    payload = json.loads(result.stdout)
-    duration = float(payload.get("format", {}).get("duration", 0))
-    streams = [stream.get("codec_type") for stream in payload.get("streams", [])]
-    if duration < 4.0:
+    try:
+        media_profile = probe_media_profile(path)
+    except MediaProbeError as exc:
+        raise InputValidationError(str(exc)) from exc
+    if media_profile.duration < 4.0:
         raise InputValidationError("Input duration must be at least 4 seconds")
-    if "video" not in streams:
+    if media_profile.video_codec is None:
         raise InputValidationError("Input has no video stream")
-    return ValidationResult(duration, "audio" in streams)
+    return ValidationResult(media_profile.duration, media_profile.has_audio, media_profile)
 
 
 class ClipPipeline:
@@ -90,11 +71,24 @@ class ClipPipeline:
             await models.create_job(db_path, job_id, source_path)
         try:
             validation = validate_input(source_path)
+            media_debug = {
+                "media_profile": {
+                    "input": validation.media_profile.to_debug_dict(),
+                    "encode_settings": describe_encode_settings(validation.media_profile),
+                }
+            }
             if not validation.has_audio:
                 flags.append("no_audio")
 
             current_stage = "stage1_decode"
-            await models.update_job(db_path, job_id, status="running", stage=current_stage, flags=flags)
+            await models.update_job(
+                db_path,
+                job_id,
+                status="running",
+                stage=current_stage,
+                flags=flags,
+                detection_debug=media_debug,
+            )
             await update_job_progress(
                 db_path,
                 job_id,
@@ -296,7 +290,15 @@ class ClipPipeline:
                 50,
                 "Encoding 1080x1440 vertical video...",
             )
-            output_path = self.encoder.encode(job_id, source_path, trim.clip_start, trim.clip_end, crops, clip_timestamps)
+            output_path = self.encoder.encode(
+                job_id,
+                source_path,
+                trim.clip_start,
+                trim.clip_end,
+                crops,
+                clip_timestamps,
+                validation.media_profile,
+            )
             await update_job_progress(
                 db_path,
                 job_id,
@@ -311,7 +313,7 @@ class ClipPipeline:
                 status="complete",
                 stage="complete",
                 flags=flags,
-                detection_debug=detection_debug,
+                detection_debug={**detection_debug, **media_debug},
                 output_path=str(output_path),
                 stage_failed=None,
                 error_detail=None,

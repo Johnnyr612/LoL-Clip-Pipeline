@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from . import config
+from .media_probe import MediaProfile
 
 
 class EncoderError(RuntimeError):
@@ -27,6 +28,76 @@ def _run_ffmpeg(args: list[str]) -> None:
     result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
         raise EncoderError(result.stderr)
+
+
+def _bitrate_label(bits_per_second: int | None) -> str:
+    if bits_per_second is None or bits_per_second <= 0:
+        return ""
+    if bits_per_second % 1_000_000 == 0:
+        return f"{bits_per_second // 1_000_000}M"
+    if bits_per_second >= 1_000_000:
+        return f"{bits_per_second / 1_000_000:.1f}M"
+    return str(bits_per_second)
+
+
+def _selected_video_bitrate(source_profile: MediaProfile | None = None) -> str:
+    if config.FFMPEG_MATCH_SOURCE_ENCODING and source_profile is not None:
+        source_bitrate = source_profile.video_bitrate or source_profile.total_bitrate
+        label = _bitrate_label(source_bitrate)
+        if label:
+            return label
+    return config.FFMPEG_VIDEO_BITRATE
+
+
+def _selected_output_fps(source_profile: MediaProfile | None = None) -> str:
+    if not config.FFMPEG_MATCH_SOURCE_ENCODING or source_profile is None or source_profile.fps is None:
+        return str(config.OUTPUT_FPS)
+    fps = source_profile.fps
+    for common_fps in (24, 25, 30, 50, 60, 120):
+        if abs(fps - common_fps) < 0.5:
+            return str(common_fps)
+    return f"{fps:.3f}".rstrip("0").rstrip(".")
+
+
+def describe_encode_settings(source_profile: MediaProfile | None = None) -> dict:
+    bitrate = _selected_video_bitrate(source_profile)
+    fps = _selected_output_fps(source_profile)
+    return {
+        "match_source_encoding": config.FFMPEG_MATCH_SOURCE_ENCODING,
+        "encoder": config.FFMPEG_VIDEO_ENCODER.lower(),
+        "fps": fps,
+        "target_video_bitrate": bitrate or None,
+        "maxrate": (config.FFMPEG_VIDEO_MAXRATE or bitrate) if bitrate else None,
+        "bufsize": (config.FFMPEG_VIDEO_BUFSIZE or bitrate) if bitrate else None,
+        "crf": None if bitrate or config.FFMPEG_VIDEO_ENCODER.lower() == "h264_nvenc" else config.FFMPEG_CRF,
+        "preset": config.FFMPEG_NVENC_PRESET if config.FFMPEG_VIDEO_ENCODER.lower() == "h264_nvenc" else config.FFMPEG_PRESET,
+        "rate_control": config.FFMPEG_NVENC_RC if config.FFMPEG_VIDEO_ENCODER.lower() == "h264_nvenc" else None,
+        "audio_bitrate": config.FFMPEG_AUDIO_BITRATE,
+        "pixel_format": "yuv420p",
+        "output_width": config.OUTPUT_WIDTH,
+        "output_height": config.OUTPUT_HEIGHT,
+    }
+
+
+def _video_encode_args(source_profile: MediaProfile | None = None) -> list[str]:
+    encoder = config.FFMPEG_VIDEO_ENCODER.lower()
+    args = ["-c:v", encoder]
+    if encoder == "h264_nvenc":
+        args.extend(["-preset", config.FFMPEG_NVENC_PRESET, "-rc", config.FFMPEG_NVENC_RC])
+        if config.FFMPEG_NVENC_CQ:
+            args.extend(["-cq", config.FFMPEG_NVENC_CQ])
+    else:
+        args.extend(["-preset", config.FFMPEG_PRESET])
+
+    bitrate = _selected_video_bitrate(source_profile)
+    if bitrate:
+        args.extend(["-b:v", bitrate])
+        args.extend(["-maxrate", config.FFMPEG_VIDEO_MAXRATE or bitrate])
+        args.extend(["-bufsize", config.FFMPEG_VIDEO_BUFSIZE or bitrate])
+    elif encoder != "h264_nvenc":
+        args.extend(["-crf", str(config.FFMPEG_CRF)])
+    args.extend(["-pix_fmt", "yuv420p"])
+    return args
 
 
 def quantize_crop_trajectory(crops: Sequence[tuple[int, int, int, int]], timestamps: Sequence[float]) -> list[CropSegment]:
@@ -178,6 +249,7 @@ class VideoEncoder:
         clip_end: float,
         crops: Sequence[tuple[int, int, int, int]],
         crop_timestamps: Sequence[float],
+        source_profile: MediaProfile | None = None,
     ) -> Path:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
@@ -191,6 +263,7 @@ class VideoEncoder:
         try:
             clip_duration = max(0.0, clip_end - clip_start)
             crop_x = _crop_x_expression(crops, crop_timestamps, clip_start, clip_end)
+            output_fps = _selected_output_fps(source_profile)
             vf = f"crop={config.CROP_W}:{config.CROP_H}:x={crop_x}:y=0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"
             _run_ffmpeg(
                 [
@@ -205,23 +278,18 @@ class VideoEncoder:
                     "-vf",
                     vf,
                     "-r",
-                    str(config.OUTPUT_FPS),
-                    "-c:v",
-                    "libx264",
-                    "-crf",
-                    str(config.FFMPEG_CRF),
-                    "-preset",
-                    config.FFMPEG_PRESET,
+                    output_fps,
+                    *_video_encode_args(source_profile),
                     "-g",
-                    str(config.OUTPUT_FPS),
+                    output_fps,
                     "-keyint_min",
-                    str(config.OUTPUT_FPS),
+                    output_fps,
                     "-sc_threshold",
                     "0",
                     "-c:a",
                     "aac",
                     "-b:a",
-                    "192k",
+                    config.FFMPEG_AUDIO_BITRATE,
                     "-movflags",
                     "+faststart",
                     str(final_output),

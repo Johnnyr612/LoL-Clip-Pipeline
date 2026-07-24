@@ -41,6 +41,7 @@ export type TikTokStatus = {
 };
 
 export type DetectionDebug = {
+  media_profile?: MediaProfileDebug;
   summary?: {
     player?: string;
     allies?: string[];
@@ -49,6 +50,37 @@ export type DetectionDebug = {
   };
   notes?: string[];
   frames?: DetectionDebugFrame[];
+};
+
+export type MediaProfileDebug = {
+  input?: {
+    duration?: number | null;
+    has_audio?: boolean;
+    video_codec?: string | null;
+    audio_codec?: string | null;
+    width?: number | null;
+    height?: number | null;
+    fps?: number | null;
+    fps_rate?: string | null;
+    video_bitrate?: number | null;
+    audio_bitrate?: number | null;
+    total_bitrate?: number | null;
+  };
+  encode_settings?: {
+    match_source_encoding?: boolean;
+    encoder?: string | null;
+    fps?: string | null;
+    target_video_bitrate?: string | null;
+    maxrate?: string | null;
+    bufsize?: string | null;
+    crf?: number | null;
+    preset?: string | null;
+    rate_control?: string | null;
+    audio_bitrate?: string | null;
+    pixel_format?: string | null;
+    output_width?: number | null;
+    output_height?: number | null;
+  };
 };
 
 export type DetectionDebugFrame = {

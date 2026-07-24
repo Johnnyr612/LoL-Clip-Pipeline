@@ -234,6 +234,32 @@ Runtime files are written outside the repo:
 - Database, uploads, temp files, and logs: `%APPDATA%\LoLClipApp`
 - Encoded clips and minimap detection debug images: `%USERPROFILE%\Videos\LoLClipApp`
 
+## Output Encoding Quality
+
+The pipeline crops the source into a vertical frame and re-encodes it, so the output bitrate controls how much of the original Medal quality is preserved. A simple Medal trim can often copy the original stream without re-encoding, but any crop or scale step needs a new encode. The default encoder uses high-quality H.264 settings:
+
+- `LOL_CLIP_VIDEO_ENCODER=libx264`
+- `LOL_CLIP_MATCH_SOURCE_ENCODING=1`
+- `LOL_CLIP_FFMPEG_CRF=18`
+- `LOL_CLIP_FFMPEG_PRESET=slow`
+- `LOL_CLIP_AUDIO_BITRATE=320k`
+
+When source matching is enabled, the backend probes the input MP4 with ffprobe and uses its detected frame rate and video bitrate for the output encode when those values are available. The completed job also stores those input/output media labels in the debug payload shown by the dashboard.
+
+For larger files that stay closer to Medal's QHD 60 FPS H.264 settings, set fallback output settings in `.env`. If FFmpeg lists `h264_nvenc`, the NVIDIA encoder path is closest to Medal's GPU/H.264 recording setup:
+
+```text
+LOL_CLIP_MATCH_SOURCE_ENCODING=1
+LOL_CLIP_VIDEO_ENCODER=h264_nvenc
+LOL_CLIP_NVENC_PRESET=p5
+LOL_CLIP_NVENC_RC=vbr
+LOL_CLIP_VIDEO_BITRATE=25M
+LOL_CLIP_VIDEO_MAXRATE=25M
+LOL_CLIP_VIDEO_BUFSIZE=50M
+```
+
+Leave `LOL_CLIP_VIDEO_BITRATE` empty to use CRF mode instead. Lower CRF values increase quality and file size; `18` is visually high quality, while `16` is a heavier near-source option.
+
 ## Local Checkpoint Files
 
 The trained checkpoint files are intentionally tracked with Git LFS so users can run the pipeline without retraining:
