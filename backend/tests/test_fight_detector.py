@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from backend import config
 from backend.cropper import AdaptiveCropper
 from backend.fight_detector import (
     DialogSegment,
     FightDetector,
+    HighlightEditorError,
     TrimResult,
     TrimSettings,
     add_output_context,
@@ -17,6 +19,8 @@ from backend.fight_detector import (
     estimate_combat_screen_x_positions,
     finish_on_kill_or_death,
     merge_highlights,
+    _best_include_span,
+    _enforce_highlight_duration,
 )
 
 
@@ -28,7 +32,7 @@ def test_highlight_no_merge():
     assert merge_highlights([(5, 10), (12, 16)]) == [(5, 10), (12, 16)]
 
 
-def test_low_confidence_fallback():
+def test_low_confidence_default_window():
     start, end, flags = boundaries_from_scores([0.0] * 60, 60)
     assert (start, end) == (25.0, 35.0)
     assert "low_confidence" in flags
@@ -79,7 +83,7 @@ def test_finish_on_kill_or_death_ends_on_confirmed_event_with_padding():
     assert result.clip_end == 37.0
     assert result.fight_end == 34.0
     assert "kill_event_detected" in result.flags
-    assert "clip_end_on_kill_or_death" in result.flags
+    assert "clip_end_extended_to_combat_event" in result.flags
 
 
 def test_finish_on_kill_or_death_does_not_force_conservative_target_window():
@@ -97,7 +101,7 @@ def test_finish_on_kill_or_death_does_not_force_conservative_target_window():
     assert result.clip_end == 49.0
     assert result.fight_end == 46.0
     assert "kill_event_detected" in result.flags
-    assert "clip_end_on_kill_or_death" in result.flags
+    assert "clip_end_extended_to_combat_event" in result.flags
     assert "conservative_full_fight_trim" not in result.flags
 
 
@@ -129,7 +133,24 @@ def test_finish_on_kill_or_death_preserves_overlapping_dialog():
     result = finish_on_kill_or_death(trim, frames, timestamps, 40)
 
     assert result.clip_end == 37.0
-    assert "clip_end_on_kill_or_death" in result.flags
+    assert "clip_end_extended_to_combat_event" in result.flags
+
+
+def test_finish_on_kill_or_death_does_not_cut_before_model_fight_end():
+    frames = np.zeros((50, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(50, dtype=np.float32)
+    for idx in range(24):
+        cv2.rectangle(frames[idx], (800, 300), (900, 307), (210, 30, 30), thickness=-1)
+        cv2.rectangle(frames[idx], (820, 360), (935, 367), (40, 210, 60), thickness=-1)
+    for idx in range(24, 50):
+        cv2.rectangle(frames[idx], (820, 360), (935, 367), (40, 210, 60), thickness=-1)
+
+    trim = TrimResult(clip_start=0, clip_end=35, fight_start=0, fight_end=35, fight_duration=35, dialog_segments=[], flags=[])
+    result = finish_on_kill_or_death(trim, frames, timestamps, 50)
+
+    assert result.clip_end == 35.0
+    assert "kill_event_detected" in result.flags
+    assert "combat_event_before_model_end_ignored_for_trim" in result.flags
 
 
 def test_add_output_context_adds_padding_without_moving_fight_markers():
@@ -142,6 +163,13 @@ def test_add_output_context_adds_padding_without_moving_fight_markers():
     assert result.fight_end == 36
     assert "output_context_padding_applied" in result.flags
     assert "pre_fight_lead_capped" in result.flags
+
+
+def test_highlight_span_helpers_choose_model_include_run():
+    values = np.array([0.1, 0.7, 0.8, 0.2, 0.65, 0.9, 0.88, 0.1], dtype=np.float32)
+
+    assert _best_include_span(values, 0.5) == (4.0, 7.0)
+    assert _enforce_highlight_duration(4.0, 7.0, 8)[0] <= 4.0
 
 
 def test_custom_trim_settings_can_tighten_pre_fight_lead():
@@ -277,20 +305,12 @@ def test_hybrid_crop_can_shift_after_persistent_champion_red_bar():
     assert threat_positions == [1260.0] * 8
     assert any(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes)
 
-def test_score_windows_uses_green_and_red_healthbar_engagement(monkeypatch):
-    frames = np.zeros((20, 1080, 1920, 3), dtype=np.uint8)
-    timestamps = np.arange(20, dtype=np.float32)
-    for idx in range(20):
-        cv2.rectangle(frames[idx], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frames[idx], (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
-
+def test_predict_highlight_trim_requires_decoded_frames():
     detector = FightDetector()
 
-    def fail_videomae():
-        raise RuntimeError("skip model")
-
-    monkeypatch.setattr(detector, "_load_videomae", fail_videomae)
-    scores = detector.score_windows(frames, timestamps)
-
-    assert scores
-    assert max(scores) >= config.FIGHT_CONFIDENCE_THRESHOLD
+    with pytest.raises(HighlightEditorError, match="no decoded frames"):
+        detector.predict_highlight_trim(
+            np.empty((0, 224, 224, 3), dtype=np.uint8),
+            np.empty((0,), dtype=np.float32),
+            60.0,
+        )

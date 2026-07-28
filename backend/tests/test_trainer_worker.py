@@ -61,6 +61,50 @@ def test_dataset_uses_posted_clip_bounds_for_strong_negatives(tmp_path) -> None:
     )
 
 
+def test_highlight_targets_encode_editor_phases() -> None:
+    include, phase = trainer_worker._highlight_targets_for_label(
+        {
+            "clip_start": 10.0,
+            "clip_end": 40.0,
+            "fight_segments": [[16.0, 32.0]],
+            "duration": 60.0,
+        }
+    )
+
+    assert include[9].item() == 0
+    assert include[10].item() == 1
+    assert include[39].item() == 1
+    assert include[40].item() == 0
+    assert phase[9].item() == trainer_worker.PHASE_EXCLUDE
+    assert phase[10].item() == trainer_worker.PHASE_BUILDUP
+    assert phase[16].item() == trainer_worker.PHASE_FIGHT
+    assert phase[32].item() == trainer_worker.PHASE_PAYOFF
+    assert phase[40].item() == trainer_worker.PHASE_EXCLUDE
+
+
+def test_highlight_dataset_uses_clip_bounds_as_training_samples(tmp_path) -> None:
+    raw_clip = tmp_path / "style-clip.mp4"
+    raw_clip.write_bytes(b"")
+
+    dataset = trainer_worker.LoLHighlightDataset(
+        None,
+        [
+            {
+                "filename": raw_clip.name,
+                "raw_path": str(raw_clip),
+                "clip_start": 12.0,
+                "clip_end": 44.0,
+                "fight_segments": [[20.0, 36.0]],
+                "duration": 60.0,
+            }
+        ],
+    )
+
+    assert dataset.missing_labels == []
+    assert len(dataset) == 1
+    assert dataset.sample_index[0][0] == raw_clip
+
+
 def test_split_labels_holds_out_whole_source_groups() -> None:
     labels = [
         {"filename": f"clip-{index}.mp4", "raw_path": str(Path("D:/clips") / f"source-{index // 2}.mp4")}

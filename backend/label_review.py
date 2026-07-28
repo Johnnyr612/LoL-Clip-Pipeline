@@ -255,54 +255,24 @@ def _segments_from_fights(
     }
 
 
-def _match_confidence_from_scores(scores: list[float]) -> str:
-    if not scores:
-        return "unmatched"
-    peak = max(scores)
-    if peak >= config.FIGHT_CONFIDENCE_THRESHOLD:
-        return "high"
-    if peak >= config.FIGHT_ONSET_THRESHOLD:
-        return "medium"
-    return "low"
-
-
 def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
-    from dataclasses import replace
-
-    from .fight_detector import (
-        FightDetector,
-        TrimSettings,
-        add_output_context,
-        apply_dialog_extension,
-        boundaries_from_scores,
-        finish_on_kill_or_death,
-    )
+    from .fight_detector import FightDetector, HighlightEditorError
     from .frame_io import decode_video
     from .pipeline import validate_input
 
     validation = validate_input(raw_path)
-    settings = TrimSettings()
     job_id = f"label_review_{uuid.uuid4().hex}"
     temp_dir = config.TEMP_DIR / job_id
     try:
         bundle = decode_video(raw_path, job_id)
         detector = FightDetector()
-        scores = detector.score_windows(bundle.full_frames, bundle.timestamps_full)
-        fight_start, fight_end, flags = boundaries_from_scores(scores, validation.duration, settings)
-        dialog = detector.transcribe(bundle.audio_path)
-        trim_result = apply_dialog_extension(fight_start, fight_end, validation.duration, dialog)
-        trim = finish_on_kill_or_death(
-            replace(trim_result, flags=flags + trim_result.flags),
-            bundle.full_frames,
-            bundle.timestamps_full,
-            validation.duration,
-            settings,
-        )
-        trim = add_output_context(trim, validation.duration, settings)
+        try:
+            trim = detector.predict_highlight_trim(bundle.full_frames, bundle.timestamps_full, validation.duration)
+        except HighlightEditorError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
     fight_segments = [[round(float(trim.fight_start), 3), round(float(trim.fight_end), 3)]]
-    peak_score = max(scores) if scores else None
     return {
         "filename": raw_path.name,
         "raw_path": str(raw_path),
@@ -317,9 +287,9 @@ def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
         "fight_segments": fight_segments,
         "segments": _segments_from_fights(trim.clip_start, trim.clip_end, fight_segments),
         "match": {
-            "method": "videomae_current_checkpoint",
-            "score": round(float(peak_score), 5) if peak_score is not None else None,
-            "confidence": _match_confidence_from_scores(scores),
+            "method": "videomae_highlight_editor",
+            "score": None,
+            "confidence": "high",
         },
         "needs_review": True,
         "reviewed": False,

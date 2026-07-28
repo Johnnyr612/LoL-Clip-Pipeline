@@ -45,6 +45,10 @@ class TrimResult:
     flags: list[str]
 
 
+class HighlightEditorError(RuntimeError):
+    """Raised when the required highlight editor cannot produce a trim."""
+
+
 def merge_highlights(windows: Sequence[tuple[float, float]], gap: float = config.FIGHT_MERGE_GAP_SEC) -> list[tuple[float, float]]:
     if not windows:
         return []
@@ -203,8 +207,13 @@ def finish_on_kill_or_death(
             flags=[*trim.flags, "combat_event_not_confirmed_extended_to_target"],
         )
 
-    clip_end = min(max_clip_end, event_time + settings.combat_event_end_padding_sec)
-    flags = [*trim.flags, event_flag, "clip_end_on_kill_or_death"]
+    event_clip_end = min(max_clip_end, event_time + settings.combat_event_end_padding_sec)
+    clip_end = max(trim.clip_end, event_clip_end)
+    flags = [*trim.flags, event_flag]
+    if event_clip_end > trim.clip_end:
+        flags.append("clip_end_extended_to_combat_event")
+    else:
+        flags.append("combat_event_before_model_end_ignored_for_trim")
     if settings.conservative_full_fight_trim:
         clip_end = max(clip_end, target_clip_end, trim.clip_end)
         flags.append("conservative_full_fight_trim")
@@ -321,42 +330,6 @@ def _nearest_bar_center_x(
     px, py = _bar_center(player_bar)
     nearest = min(bars, key=lambda bar: float(np.linalg.norm(np.array(_bar_center(bar)) - np.array((px, py)))))
     return float(_bar_center(nearest)[0])
-
-
-def _combine_scores(primary_scores: Sequence[float], healthbar_scores: Sequence[float]) -> list[float]:
-    length = max(len(primary_scores), len(healthbar_scores))
-    combined: list[float] = []
-    for idx in range(length):
-        primary = float(primary_scores[idx]) if idx < len(primary_scores) else 0.0
-        healthbar = float(healthbar_scores[idx]) if idx < len(healthbar_scores) else 0.0
-        combined.append(max(primary, healthbar))
-    return combined
-
-
-def _healthbar_engagement_scores(full_frames: np.ndarray, timestamps: np.ndarray) -> list[float]:
-    if len(full_frames) == 0:
-        return []
-    max_second = int(float(timestamps[-1])) if len(timestamps) else max(0, len(full_frames) - 1)
-    scores: list[float] = []
-    for second in range(max(0, max_second - 15)):
-        frame_indices = np.where((timestamps >= second) & (timestamps < second + 16))[0]
-        if len(frame_indices) == 0:
-            scores.append(0.0)
-            continue
-        if len(frame_indices) > 12:
-            frame_indices = frame_indices[np.linspace(0, len(frame_indices) - 1, 12, dtype=int)]
-        engaged_scores: list[float] = []
-        for index in frame_indices:
-            red_bars, green_bars = _combat_health_bars(full_frames[int(index)])
-            player_bar = _select_player_health_bar(green_bars)
-            nearby_enemies = _enemy_bars_near_player(red_bars, player_bar)
-            if player_bar is None or not nearby_enemies:
-                engaged_scores.append(0.0)
-                continue
-            enemy_count_bonus = min(len(nearby_enemies), 3) * 0.05
-            engaged_scores.append(min(0.95, 0.72 + enemy_count_bonus))
-        scores.append(float(np.median(engaged_scores)) if engaged_scores else 0.0)
-    return scores
 
 
 def _mean_bar_center_x(bars: Sequence[tuple[int, int, int, int]]) -> float | None:
@@ -530,6 +503,60 @@ def _enemy_bars_near_player(
     return nearby
 
 
+def _smooth_series(values: np.ndarray, radius: int = 1) -> np.ndarray:
+    if len(values) == 0 or radius <= 0:
+        return values
+    smoothed = np.zeros_like(values, dtype=np.float32)
+    for idx in range(len(values)):
+        start = max(0, idx - radius)
+        end = min(len(values), idx + radius + 1)
+        smoothed[idx] = float(np.mean(values[start:end]))
+    return smoothed
+
+
+def _best_include_span(values: np.ndarray, threshold: float) -> tuple[float, float] | None:
+    best: tuple[int, int, float] | None = None
+    start: int | None = None
+    score = 0.0
+    for idx, value in enumerate(values):
+        if float(value) >= threshold:
+            if start is None:
+                start = idx
+                score = 0.0
+            score += float(value)
+        elif start is not None:
+            candidate = (start, idx, score)
+            if best is None or candidate[2] > best[2]:
+                best = candidate
+            start = None
+    if start is not None:
+        candidate = (start, len(values), score)
+        if best is None or candidate[2] > best[2]:
+            best = candidate
+    return None if best is None else (float(best[0]), float(best[1]))
+
+
+def _enforce_highlight_duration(start: float, end: float, valid_seconds: int) -> tuple[float, float]:
+    min_duration = max(0.0, float(config.HIGHLIGHT_MIN_CLIP_DURATION_SEC))
+    max_duration = max(min_duration, float(config.HIGHLIGHT_MAX_CLIP_DURATION_SEC))
+    duration = end - start
+    if duration < min_duration:
+        center = (start + end) / 2.0
+        start = center - min_duration / 2.0
+        end = center + min_duration / 2.0
+    if end - start > max_duration:
+        center = (start + end) / 2.0
+        start = center - max_duration / 2.0
+        end = center + max_duration / 2.0
+    if start < 0.0:
+        end -= start
+        start = 0.0
+    if end > valid_seconds:
+        start = max(0.0, start - (end - valid_seconds))
+        end = float(valid_seconds)
+    return max(0.0, start), max(start, end)
+
+
 class FightDetector:
     def __init__(self) -> None:
         self.videomae_loaded = False
@@ -537,10 +564,57 @@ class FightDetector:
         self._videomae_model = None
         self._videomae_device = None
         self._videomae_load_error: str | None = None
+        self._highlight_model = None
+        self._highlight_device = None
+        self._highlight_load_error: str | None = None
         self._whisper_model = None
         self._whisper_load_error: str | None = None
-        if not config.VIDEOMAE_CHECKPOINT.exists():
-            logger.warning("VideoMAE checkpoint missing; pretrained/fallback scoring will be used")
+
+    def _load_highlight_editor(self):
+        if self._highlight_model is not None and self._highlight_device is not None:
+            return self._highlight_model, self._highlight_device
+        if self._highlight_load_error:
+            raise RuntimeError(self._highlight_load_error)
+
+        try:
+            import torch
+            import torch.nn as nn
+            from transformers import VideoMAEModel
+
+            checkpoint_path = Path(str(config.VIDEOMAE_HIGHLIGHT_CHECKPOINT))
+            if not checkpoint_path.exists():
+                raise FileNotFoundError(f"VideoMAE highlight checkpoint not found at {checkpoint_path}")
+
+            checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+            context_seconds = int(checkpoint.get("context_seconds", config.HIGHLIGHT_CONTEXT_SECONDS))
+            phase_count = len(checkpoint.get("phase_names", ("exclude", "buildup", "fight", "payoff")))
+            state_dict = checkpoint.get("model_state", checkpoint)
+            device = torch.device(CUDA_DEVICE_TYPE if torch.cuda.is_available() else "cpu")
+
+            class _HighlightEditor(nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.context_seconds = context_seconds
+                    self.videomae = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
+                    self.include_head = nn.Linear(768, context_seconds * 2)
+                    self.phase_head = nn.Linear(768, context_seconds * phase_count)
+
+                def forward(self, pixel_values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                    out = self.videomae(pixel_values=pixel_values)
+                    pooled = out.last_hidden_state.mean(dim=1)
+                    include_logits = self.include_head(pooled).view(-1, context_seconds, 2)
+                    phase_logits = self.phase_head(pooled).view(-1, context_seconds, phase_count)
+                    return include_logits, phase_logits
+
+            model = _HighlightEditor().to(device)
+            model.load_state_dict(state_dict)
+            model.eval()
+            self._highlight_model = model
+            self._highlight_device = device
+            return model, device
+        except Exception as exc:  # noqa: BLE001 - surface the loader error on the next inference attempt.
+            self._highlight_load_error = str(exc)
+            raise
 
     def _load_videomae(self):
         if self._videomae_model is not None and self._videomae_device is not None:
@@ -577,9 +651,90 @@ class FightDetector:
             self._videomae_device = device
             self.videomae_loaded = True
             return model, device
-        except Exception as exc:  # noqa: BLE001 - inference can fall back to heuristics.
+        except Exception as exc:  # noqa: BLE001 - cache the loader error for consistent retries.
             self._videomae_load_error = str(exc)
             raise
+
+    def predict_highlight_trim(
+        self,
+        full_frames: np.ndarray,
+        timestamps: np.ndarray,
+        source_duration: float,
+    ) -> TrimResult:
+        if len(full_frames) == 0 or len(timestamps) == 0:
+            raise HighlightEditorError("VideoMAE highlight editor received no decoded frames")
+        try:
+            import torch
+            import torchvision.transforms.functional as TF
+
+            try:
+                model, device = self._load_highlight_editor()
+            except Exception as exc:  # noqa: BLE001 - preserve the original loader failure as the cause.
+                raise HighlightEditorError(f"VideoMAE highlight editor failed to load: {exc}") from exc
+
+            context_seconds = int(getattr(model, "context_seconds", config.HIGHLIGHT_CONTEXT_SECONDS))
+            valid_seconds = max(1, min(context_seconds, int(np.ceil(source_duration))))
+            sample_count = max(1, config.HIGHLIGHT_INPUT_FRAMES)
+            sample_times = np.linspace(0.0, max(float(valid_seconds) - 1.0, 0.0), sample_count)
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+            tensors = []
+            for sample_time in sample_times:
+                index = int(np.argmin(np.abs(timestamps - float(sample_time))))
+                frame = full_frames[min(index, len(full_frames) - 1)]
+                tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+                tensor = TF.resize(tensor, [224, 224], antialias=True)
+                tensor = TF.normalize(tensor, mean, std)
+                tensors.append(tensor)
+
+            pixel_values = torch.stack(tensors).unsqueeze(0).to(device)
+            with torch.no_grad():
+                ctx = torch.cuda.amp.autocast() if device.type == CUDA_DEVICE_TYPE else contextlib.nullcontext()
+                with ctx:
+                    include_logits, phase_logits = model(pixel_values)
+                include_probs = torch.softmax(include_logits[0], dim=-1)[:, 1].detach().cpu().numpy()
+                phase_probs = torch.softmax(phase_logits[0], dim=-1).detach().cpu().numpy()
+
+            include_probs = include_probs[:valid_seconds]
+            phase_probs = phase_probs[:valid_seconds]
+            smoothed = _smooth_series(include_probs, radius=1)
+            span = _best_include_span(smoothed, config.HIGHLIGHT_INCLUDE_THRESHOLD)
+            if span is None:
+                peak = float(np.max(include_probs)) if len(include_probs) else 0.0
+                raise HighlightEditorError(
+                    "VideoMAE highlight editor did not select an include span "
+                    f"(peak={peak:.3f}, threshold={config.HIGHLIGHT_INCLUDE_THRESHOLD:.3f})"
+                )
+            clip_start, clip_end = _enforce_highlight_duration(span[0], span[1], valid_seconds)
+            if clip_end <= clip_start:
+                raise HighlightEditorError(
+                    f"VideoMAE highlight editor produced an invalid trim: {clip_start:.3f}s to {clip_end:.3f}s"
+                )
+            phase_pred = np.argmax(phase_probs, axis=1)
+            fight_indexes = [
+                idx
+                for idx in range(int(np.floor(clip_start)), int(np.ceil(clip_end)))
+                if 0 <= idx < len(phase_pred) and int(phase_pred[idx]) == 2
+            ]
+            fight_start = float(fight_indexes[0]) if fight_indexes else clip_start
+            fight_end = float(fight_indexes[-1] + 1) if fight_indexes else clip_end
+            flags = [
+                "highlight_editor_model",
+                f"highlight_include_peak={float(np.max(include_probs)):.3f}",
+            ]
+            return TrimResult(
+                clip_start=round(float(clip_start), 3),
+                clip_end=round(float(min(source_duration, clip_end)), 3),
+                fight_start=round(float(fight_start), 3),
+                fight_end=round(float(min(source_duration, fight_end)), 3),
+                fight_duration=round(float(max(0.0, fight_end - fight_start)), 3),
+                dialog_segments=[],
+                flags=flags,
+            )
+        except HighlightEditorError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - make editor inference failures visible to the job.
+            raise HighlightEditorError(f"VideoMAE highlight editor inference failed: {exc}") from exc
 
     def score_windows(
         self,
@@ -588,79 +743,50 @@ class FightDetector:
     ) -> list[float]:
         """
         Score each 1-second window as P(fight) using VideoMAE.
-        Automatically falls back to heuristic if checkpoint missing
-        or if inference fails for any reason.
         """
         if len(full_frames) == 0:
             return []
 
-        try:
-            import torch
-            import torchvision.transforms.functional as TF
-            model, device = self._load_videomae()
+        import torch
+        import torchvision.transforms.functional as TF
+        model, device = self._load_videomae()
 
-            mean = [0.485, 0.456, 0.406]
-            std = [0.229, 0.224, 0.225]
-            scores: list[float] = []
-            max_second = int(float(timestamps[-1])) if len(timestamps) else 0
-
-            with torch.no_grad():
-                for second in range(max(0, max_second - 15)):
-                    indices = np.where(
-                        (timestamps >= second) & (timestamps < second + 16)
-                    )[0]
-                    if len(indices) == 0:
-                        scores.append(0.0)
-                        continue
-                    selected = indices[
-                        np.linspace(0, len(indices) - 1, 16).astype(int)
-                    ]
-                    tensors = []
-                    for frame in full_frames[selected]:
-                        t = (
-                            torch.from_numpy(frame).permute(2, 0, 1).float()
-                            / 255.0
-                        )
-                        t = TF.resize(t, [224, 224], antialias=True)
-                        t = TF.normalize(t, mean, std)
-                        tensors.append(t)
-                    pixel_values = torch.stack(tensors).unsqueeze(0).to(device)
-                    ctx = (
-                        torch.cuda.amp.autocast()
-                        if device.type == CUDA_DEVICE_TYPE
-                        else contextlib.nullcontext()
-                    )
-                    with ctx:
-                        logits = model(pixel_values)
-                    prob = float(torch.softmax(logits, dim=-1)[0, 1].cpu())
-                    scores.append(prob)
-
-            return _combine_scores(scores, _healthbar_engagement_scores(full_frames, timestamps))
-
-        except Exception as exc:
-            logger.warning(
-                "VideoMAE inference failed (%s) - heuristic fallback",
-                exc,
-            )
-            heuristic_scores = self._heuristic_scores(full_frames, timestamps)
-            return _combine_scores(heuristic_scores, _healthbar_engagement_scores(full_frames, timestamps))
-
-    def _heuristic_scores(
-        self,
-        full_frames: np.ndarray,
-        timestamps: np.ndarray,
-    ) -> list[float]:
-        """Red-dominance fallback - used when VideoMAE checkpoint missing."""
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
         scores: list[float] = []
-        max_second = int(float(timestamps[-1])) if len(timestamps) else max(0, len(full_frames) - 1)
-        for second in range(max(0, max_second - 15)):
-            frame_indices = np.where((timestamps >= second) & (timestamps < second + 16))[0]
-            if len(frame_indices) == 0:
-                scores.append(0.0)
-                continue
-            sample = full_frames[frame_indices]
-            red_dominance = (sample[:, :, :, 0].astype(np.float32) - sample[:, :, :, 1].astype(np.float32)).mean()
-            scores.append(float(np.clip((red_dominance + 20) / 80, 0, 1)))
+        max_second = int(float(timestamps[-1])) if len(timestamps) else 0
+
+        with torch.no_grad():
+            for second in range(max(0, max_second - 15)):
+                indices = np.where(
+                    (timestamps >= second) & (timestamps < second + 16)
+                )[0]
+                if len(indices) == 0:
+                    scores.append(0.0)
+                    continue
+                selected = indices[
+                    np.linspace(0, len(indices) - 1, 16).astype(int)
+                ]
+                tensors = []
+                for frame in full_frames[selected]:
+                    t = (
+                        torch.from_numpy(frame).permute(2, 0, 1).float()
+                        / 255.0
+                    )
+                    t = TF.resize(t, [224, 224], antialias=True)
+                    t = TF.normalize(t, mean, std)
+                    tensors.append(t)
+                pixel_values = torch.stack(tensors).unsqueeze(0).to(device)
+                ctx = (
+                    torch.cuda.amp.autocast()
+                    if device.type == CUDA_DEVICE_TYPE
+                    else contextlib.nullcontext()
+                )
+                with ctx:
+                    logits = model(pixel_values)
+                prob = float(torch.softmax(logits, dim=-1)[0, 1].cpu())
+                scores.append(prob)
+
         return scores
 
     def transcribe(self, audio_path: Path | None) -> list[DialogSegment]:

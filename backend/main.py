@@ -54,6 +54,7 @@ trainer = TrainingCoordinator()
 
 
 class TrainRequest(BaseModel):
+    task: Literal["highlight", "fight"] = "highlight"
     clips_dir: str = ""
     labels: str
     epochs: int = 25
@@ -374,6 +375,7 @@ async def start_training(req: TrainRequest) -> dict:
         backbone_lr=req.backbone_lr,
         val_fraction=req.val_fraction,
         progress_interval=req.progress_interval,
+        task=req.task,
     )
     return {"run_id": run_id}
 

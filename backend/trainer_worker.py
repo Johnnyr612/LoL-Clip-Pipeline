@@ -29,6 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--progress-interval", type=int, default=5)
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--task", choices=["highlight", "fight"], default="highlight")
     return parser
 
 
@@ -42,8 +43,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
-from transformers import VideoMAEModel
-from transformers import get_cosine_schedule_with_warmup
 
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
@@ -60,6 +59,14 @@ PRECOMPUTED_DIR = Path("precomputed")
 WINDOW_SECONDS = 16
 POSITIVE_OVERLAP_THRESHOLD = 0.50
 NEGATIVE_OVERLAP_THRESHOLD = 0.10
+HIGHLIGHT_CONTEXT_SECONDS = config.HIGHLIGHT_CONTEXT_SECONDS
+HIGHLIGHT_INPUT_FRAMES = config.HIGHLIGHT_INPUT_FRAMES
+PHASE_EXCLUDE = 0
+PHASE_BUILDUP = 1
+PHASE_FIGHT = 2
+PHASE_PAYOFF = 3
+PHASE_NAMES = ("exclude", "buildup", "fight", "payoff")
+IGNORE_INDEX = -100
 
 
 def _clean_segments(label: dict) -> list[tuple[float, float]]:
@@ -93,6 +100,61 @@ def _clip_bounds(label: dict, duration: float) -> tuple[float, float] | None:
     clip_start = max(0.0, min(float(label.get("clip_start") or 0.0), duration))
     clip_end = max(clip_start, min(float(label.get("clip_end") or duration), duration))
     return clip_start, clip_end
+
+
+def _duration_for_label(label: dict, fallback_end: float = 0.0) -> float:
+    duration_value = (
+        label.get("duration")
+        or label.get("source_duration")
+        or label.get("raw_duration")
+        or label.get("clip_duration")
+        or fallback_end
+        or HIGHLIGHT_CONTEXT_SECONDS
+    )
+    return max(1.0, float(duration_value))
+
+
+def _highlight_targets_for_label(label: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    fight_segments = _clean_segments(label)
+    last_fight_end = max((end for _, end in fight_segments), default=0.0)
+    duration = _duration_for_label(label, last_fight_end + WINDOW_SECONDS)
+    clip_bounds = _clip_bounds(label, duration)
+    if clip_bounds is None:
+        return (
+            torch.full((HIGHLIGHT_CONTEXT_SECONDS,), IGNORE_INDEX, dtype=torch.long),
+            torch.full((HIGHLIGHT_CONTEXT_SECONDS,), IGNORE_INDEX, dtype=torch.long),
+        )
+
+    clip_start, clip_end = clip_bounds
+    fight_start = min((start for start, _ in fight_segments), default=clip_start)
+    fight_end = max((end for _, end in fight_segments), default=clip_end)
+    fight_start = max(clip_start, min(float(fight_start), clip_end))
+    fight_end = max(fight_start, min(float(fight_end), clip_end))
+
+    include = torch.zeros(HIGHLIGHT_CONTEXT_SECONDS, dtype=torch.long)
+    phase = torch.zeros(HIGHLIGHT_CONTEXT_SECONDS, dtype=torch.long)
+    valid_seconds = max(0, min(HIGHLIGHT_CONTEXT_SECONDS, int(np.ceil(duration))))
+    if valid_seconds < HIGHLIGHT_CONTEXT_SECONDS:
+        include[valid_seconds:] = IGNORE_INDEX
+        phase[valid_seconds:] = IGNORE_INDEX
+
+    for second in range(valid_seconds):
+        center = second + 0.5
+        if clip_start <= center < clip_end:
+            include[second] = 1
+            phase[second] = PHASE_BUILDUP
+        if fight_start <= center < fight_end:
+            phase[second] = PHASE_FIGHT
+        elif fight_end <= center < clip_end:
+            phase[second] = PHASE_PAYOFF
+
+    return include, phase
+
+
+def _has_highlight_bounds(label: dict) -> bool:
+    duration = _duration_for_label(label)
+    bounds = _clip_bounds(label, duration)
+    return bounds is not None and bounds[1] > bounds[0]
 
 
 def _window_outside_posted_clip(start_second: int, clip_bounds: tuple[float, float] | None) -> bool:
@@ -246,9 +308,86 @@ class LoLFightDataset(Dataset[tuple[torch.Tensor, int]]):
         return torch.stack(tensors), int(label)
 
 
+class LoLHighlightDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
+    def __init__(
+        self,
+        clips_dir: Path | None,
+        labels: list[dict],
+        smoke_test: bool = False,
+    ) -> None:
+        self.clips_dir = clips_dir
+        self.labels = labels[:5] if smoke_test else labels
+        self.sample_index: list[tuple[Path, dict]] = []
+        self.missing_labels: list[str] = []
+        self._prepare_samples()
+
+    def _prepare_samples(self) -> None:
+        for label in self.labels:
+            clip_path = _resolve_clip_path(self.clips_dir, label)
+            if clip_path is None:
+                self.missing_labels.append(str(label.get("filename") or label.get("raw_path") or "<unknown>"))
+                continue
+            if not _has_highlight_bounds(label):
+                self.missing_labels.append(str(label.get("filename") or clip_path.name))
+                continue
+            self.sample_index.append((clip_path, label))
+
+    def __len__(self) -> int:
+        return len(self.sample_index)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        clip_path, label = self.sample_index[index]
+        pixel_values = _sample_context_tensor(clip_path, HIGHLIGHT_CONTEXT_SECONDS, HIGHLIGHT_INPUT_FRAMES)
+        include_targets, phase_targets = _highlight_targets_for_label(label)
+        return pixel_values, include_targets, phase_targets
+
+
+def _sample_context_tensor(
+    clip_path: Path,
+    context_seconds: int,
+    input_frames: int,
+) -> torch.Tensor:
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    sample_seconds = np.linspace(0.0, max(float(context_seconds) - 1.0, 0.0), max(1, input_frames))
+    tensors: list[torch.Tensor] = []
+
+    precomputed_path = PRECOMPUTED_DIR / (clip_path.stem + ".npy")
+    if precomputed_path.exists():
+        frames = np.load(str(precomputed_path), mmap_mode="r")
+        for second in sample_seconds:
+            frame_index = min(int(round(float(second))), len(frames) - 1)
+            frame = frames[max(0, frame_index)].copy()
+            if frame.shape[:2] != (224, 224):
+                frame = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_AREA)
+            normalized = (frame.astype(np.float32) / 255.0 - mean) / std
+            tensors.append(torch.from_numpy(np.transpose(normalized, (2, 0, 1))).float())
+        return torch.stack(tensors)
+
+    capture = cv2.VideoCapture(str(clip_path))
+    source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 120.0)
+    if source_fps <= 0.0:
+        source_fps = 120.0
+    for second in sample_seconds:
+        frame_number = int(float(second) * source_fps)
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        ok, frame_bgr = capture.read()
+        if ok:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        else:
+            frame_rgb = np.zeros((224, 224, 3), dtype=np.uint8)
+        resized = cv2.resize(frame_rgb, (224, 224), interpolation=cv2.INTER_AREA)
+        normalized = (resized.astype(np.float32) / 255.0 - mean) / std
+        tensors.append(torch.from_numpy(np.transpose(normalized, (2, 0, 1))).float())
+    capture.release()
+    return torch.stack(tensors)
+
+
 class VideoMAEClassifier(nn.Module):
     def __init__(self, freeze_backbone: bool = True, unfreeze_last_n_layers: int = 2) -> None:
         super().__init__()
+        from transformers import VideoMAEModel
+
         self.videomae = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
         self.classifier = nn.Linear(768, 2)
         if freeze_backbone:
@@ -275,6 +414,48 @@ class VideoMAEClassifier(nn.Module):
         outputs = self.videomae(pixel_values=pixel_values)
         pooled = outputs.last_hidden_state.mean(dim=1)
         return self.classifier(pooled)
+
+
+class VideoMAEHighlightEditor(nn.Module):
+    def __init__(
+        self,
+        context_seconds: int = HIGHLIGHT_CONTEXT_SECONDS,
+        freeze_backbone: bool = True,
+        unfreeze_last_n_layers: int = 2,
+    ) -> None:
+        super().__init__()
+        self.context_seconds = int(context_seconds)
+        from transformers import VideoMAEModel
+
+        self.videomae = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
+        self.include_head = nn.Linear(768, self.context_seconds * 2)
+        self.phase_head = nn.Linear(768, self.context_seconds * len(PHASE_NAMES))
+        if freeze_backbone:
+            self._freeze_backbone(max(0, unfreeze_last_n_layers))
+
+    def _freeze_backbone(self, unfreeze_last_n_layers: int) -> None:
+        for parameter in self.videomae.parameters():
+            parameter.requires_grad = False
+
+        encoder = getattr(self.videomae, "encoder", None)
+        layers = list(getattr(encoder, "layer", []) or [])
+        if unfreeze_last_n_layers > 0 and layers:
+            for layer in layers[-unfreeze_last_n_layers:]:
+                for parameter in layer.parameters():
+                    parameter.requires_grad = True
+
+        for attr_name in ("layernorm", "fc_norm", "norm"):
+            module = getattr(self.videomae, attr_name, None)
+            if module is not None:
+                for parameter in module.parameters():
+                    parameter.requires_grad = True
+
+    def forward(self, pixel_values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        outputs = self.videomae(pixel_values=pixel_values)
+        pooled = outputs.last_hidden_state.mean(dim=1)
+        include_logits = self.include_head(pooled).view(-1, self.context_seconds, 2)
+        phase_logits = self.phase_head(pooled).view(-1, self.context_seconds, len(PHASE_NAMES))
+        return include_logits, phase_logits
 
 
 def _auto_batch_size() -> int:
@@ -309,7 +490,7 @@ def _split_labels(all_labels: list[dict], val_fraction: float = 0.15) -> tuple[l
 
 
 def _create_loader(
-    dataset: LoLFightDataset,
+    dataset: Dataset,
     batch_size: int,
     num_workers: int,
     shuffle: bool,
@@ -328,12 +509,17 @@ def _trainable_counts(model: nn.Module) -> tuple[int, int]:
     return trainable, total
 
 
-def _optimizer(model: VideoMAEClassifier, classifier_lr: float, backbone_lr: float) -> torch.optim.Optimizer:
-    classifier_params = [parameter for parameter in model.classifier.parameters() if parameter.requires_grad]
+def _optimizer(model: nn.Module, classifier_lr: float, backbone_lr: float) -> torch.optim.Optimizer:
+    head_prefixes = ("classifier.", "include_head.", "phase_head.")
+    classifier_params = [
+        parameter
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad and name.startswith(head_prefixes)
+    ]
     backbone_params = [
         parameter
         for name, parameter in model.named_parameters()
-        if parameter.requires_grad and not name.startswith("classifier.")
+        if parameter.requires_grad and not name.startswith(head_prefixes)
     ]
     parameter_groups: list[dict] = []
     if backbone_params:
@@ -347,6 +533,80 @@ def _optimizer(model: VideoMAEClassifier, classifier_lr: float, backbone_lr: flo
 
 def _write_metrics(metrics_path: Path, payload: dict) -> None:
     metrics_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _highlight_loss(
+    include_logits: torch.Tensor,
+    phase_logits: torch.Tensor,
+    include_targets: torch.Tensor,
+    phase_targets: torch.Tensor,
+) -> torch.Tensor:
+    include_loss = F.cross_entropy(
+        include_logits.reshape(-1, 2),
+        include_targets.reshape(-1),
+        ignore_index=IGNORE_INDEX,
+    )
+    phase_loss = F.cross_entropy(
+        phase_logits.reshape(-1, len(PHASE_NAMES)),
+        phase_targets.reshape(-1),
+        ignore_index=IGNORE_INDEX,
+    )
+    return include_loss + phase_loss
+
+
+def _masked_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> tuple[int, int]:
+    mask = targets != IGNORE_INDEX
+    total = int(mask.sum().item())
+    if total == 0:
+        return 0, 0
+    preds = logits.argmax(dim=-1)
+    correct = int(((preds == targets) & mask).sum().item())
+    return correct, total
+
+
+def _span_from_include_labels(labels: torch.Tensor) -> tuple[int, int] | None:
+    indexes = torch.nonzero(labels == 1, as_tuple=False).flatten()
+    if indexes.numel() == 0:
+        return None
+    return int(indexes[0].item()), int(indexes[-1].item()) + 1
+
+
+def _span_from_include_logits(logits: torch.Tensor) -> tuple[int, int] | None:
+    include_probs = torch.softmax(logits, dim=-1)[:, 1]
+    mask = include_probs >= 0.5
+    best: tuple[int, int, float] | None = None
+    start: int | None = None
+    score = 0.0
+    for idx, active in enumerate(mask.tolist()):
+        if active:
+            if start is None:
+                start = idx
+                score = 0.0
+            score += float(include_probs[idx].item())
+        elif start is not None:
+            candidate = (start, idx, score)
+            if best is None or candidate[2] > best[2]:
+                best = candidate
+            start = None
+    if start is not None:
+        candidate = (start, len(mask), score)
+        if best is None or candidate[2] > best[2]:
+            best = candidate
+    return None if best is None else (best[0], best[1])
+
+
+def _boundary_mae_seconds(include_logits: torch.Tensor, include_targets: torch.Tensor) -> float | None:
+    errors: list[float] = []
+    for logits, targets in zip(include_logits.detach().cpu(), include_targets.detach().cpu()):
+        predicted = _span_from_include_logits(logits)
+        expected = _span_from_include_labels(targets)
+        if predicted is None or expected is None:
+            continue
+        errors.append(abs(predicted[0] - expected[0]))
+        errors.append(abs(predicted[1] - expected[1]))
+    if not errors:
+        return None
+    return float(np.mean(errors))
 
 
 def main() -> int:
@@ -384,7 +644,7 @@ def main() -> int:
         epochs = args.epochs
 
     print(
-        f"run_id={args.run_id} slice={args.slice} clips_dir={args.clips_dir} labels={args.labels} "
+        f"run_id={args.run_id} slice={args.slice} task={args.task} clips_dir={args.clips_dir} labels={args.labels} "
         f"epochs={epochs} batch_size={batch_size} output_dir={output_dir} device={device} "
         f"freeze_backbone={args.freeze_backbone} unfreeze_last_n_layers={args.unfreeze_last_n_layers} "
         f"classifier_lr={args.classifier_lr} backbone_lr={args.backbone_lr} val_fraction={args.val_fraction}",
@@ -393,10 +653,16 @@ def main() -> int:
     print("Building dataset index...", flush=True)
 
     train_labels, val_labels = _split_labels(all_labels, args.val_fraction)
-    train_dataset = LoLFightDataset(args.clips_dir, train_labels, args.smoke_test)
-    val_dataset = LoLFightDataset(args.clips_dir, val_labels, args.smoke_test)
-    print(f"Train labels: {len(train_labels)} windows: {len(train_dataset)} missing: {len(train_dataset.missing_labels)}", flush=True)
-    print(f"Val labels: {len(val_labels)} windows: {len(val_dataset)} missing: {len(val_dataset.missing_labels)}", flush=True)
+    if args.task == "highlight":
+        train_dataset = LoLHighlightDataset(args.clips_dir, train_labels, args.smoke_test)
+        val_dataset = LoLHighlightDataset(args.clips_dir, val_labels, args.smoke_test)
+        sample_label = "clips"
+    else:
+        train_dataset = LoLFightDataset(args.clips_dir, train_labels, args.smoke_test)
+        val_dataset = LoLFightDataset(args.clips_dir, val_labels, args.smoke_test)
+        sample_label = "windows"
+    print(f"Train labels: {len(train_labels)} {sample_label}: {len(train_dataset)} missing: {len(train_dataset.missing_labels)}", flush=True)
+    print(f"Val labels: {len(val_labels)} {sample_label}: {len(val_dataset)} missing: {len(val_dataset.missing_labels)}", flush=True)
     if train_dataset.missing_labels:
         print(f"WARNING: skipped {len(train_dataset.missing_labels)} train labels with missing clips", flush=True)
     if val_dataset.missing_labels:
@@ -410,19 +676,30 @@ def main() -> int:
     train_loader = _create_loader(train_dataset, batch_size, num_workers, True)
     val_loader = _create_loader(val_dataset, batch_size, num_workers, False)
 
-    model = VideoMAEClassifier(
-        freeze_backbone=args.freeze_backbone,
-        unfreeze_last_n_layers=args.unfreeze_last_n_layers,
-    ).to(device)
+    if args.task == "highlight":
+        model = VideoMAEHighlightEditor(
+            freeze_backbone=args.freeze_backbone,
+            unfreeze_last_n_layers=args.unfreeze_last_n_layers,
+        ).to(device)
+        checkpoint_path = output_dir / "videomae_lol_highlight_editor.pt"
+    else:
+        model = VideoMAEClassifier(
+            freeze_backbone=args.freeze_backbone,
+            unfreeze_last_n_layers=args.unfreeze_last_n_layers,
+        ).to(device)
+        checkpoint_path = output_dir / "videomae_lol_best.pt"
     trainable, total = _trainable_counts(model)
     print(f"Trainable parameters: {trainable:,}/{total:,} ({100.0 * trainable / max(total, 1):.2f}%)", flush=True)
 
-    checkpoint_path = output_dir / "videomae_lol_best.pt"
     if checkpoint_path.exists() and not args.smoke_test:
-        model.load_state_dict(torch.load(str(checkpoint_path), map_location=device))
+        checkpoint = torch.load(str(checkpoint_path), map_location=device)
+        state_dict = checkpoint.get("model_state", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        model.load_state_dict(state_dict)
         print("Resuming from existing checkpoint", flush=True)
 
     optimizer = _optimizer(model, args.classifier_lr, args.backbone_lr)
+    from transformers import get_cosine_schedule_with_warmup
+
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=min(100, max(epochs * len(train_loader) // 10, 1)),
@@ -443,15 +720,31 @@ def main() -> int:
         optimizer.zero_grad()
         epoch_started = time.monotonic()
 
-        for batch_idx, (pixel_values, labels) in enumerate(train_loader, start=1):
-            pixel_values = pixel_values.to(device)
-            labels = labels.to(device)
+        for batch_idx, batch in enumerate(train_loader, start=1):
+            if args.task == "highlight":
+                pixel_values, include_targets, phase_targets = batch
+                pixel_values = pixel_values.to(device)
+                include_targets = include_targets.to(device)
+                phase_targets = phase_targets.to(device)
+            else:
+                pixel_values, labels = batch
+                pixel_values = pixel_values.to(device)
+                labels = labels.to(device)
 
             try:
                 ctx = torch.cuda.amp.autocast() if scaler else contextlib.nullcontext()
                 with ctx:
-                    logits = model(pixel_values)
-                    loss = F.cross_entropy(logits, labels) / gradient_accumulation_steps
+                    if args.task == "highlight":
+                        include_logits, phase_logits = model(pixel_values)
+                        loss = _highlight_loss(
+                            include_logits,
+                            phase_logits,
+                            include_targets,
+                            phase_targets,
+                        ) / gradient_accumulation_steps
+                    else:
+                        logits = model(pixel_values)
+                        loss = F.cross_entropy(logits, labels) / gradient_accumulation_steps
 
                 if scaler:
                     scaler.scale(loss).backward()
@@ -481,6 +774,7 @@ def main() -> int:
                         {
                             "run_id": args.run_id,
                             "slice": int(args.slice),
+                            "task": args.task,
                             "status": "running",
                             "phase": "train",
                             "epoch": epoch,
@@ -507,6 +801,7 @@ def main() -> int:
                 metrics = {
                     "run_id": args.run_id,
                     "slice": int(args.slice),
+                    "task": args.task,
                     "status": "failed",
                     "phase": "train",
                     "epoch": epoch,
@@ -524,27 +819,55 @@ def main() -> int:
         total_val_loss = 0.0
         correct = 0
         total = 0
+        include_correct = 0
+        include_total = 0
+        phase_correct = 0
+        phase_total = 0
+        boundary_errors: list[float] = []
 
         with torch.no_grad():
-            for val_idx, (pixel_values, labels) in enumerate(val_loader, start=1):
-                pixel_values = pixel_values.to(device)
-                labels = labels.to(device)
+            for val_idx, batch in enumerate(val_loader, start=1):
+                if args.task == "highlight":
+                    pixel_values, include_targets, phase_targets = batch
+                    pixel_values = pixel_values.to(device)
+                    include_targets = include_targets.to(device)
+                    phase_targets = phase_targets.to(device)
+                else:
+                    pixel_values, labels = batch
+                    pixel_values = pixel_values.to(device)
+                    labels = labels.to(device)
                 ctx = torch.cuda.amp.autocast() if device.type == CUDA_DEVICE_TYPE else contextlib.nullcontext()
                 with ctx:
-                    logits = model(pixel_values)
-                loss = F.cross_entropy(logits, labels)
+                    if args.task == "highlight":
+                        include_logits, phase_logits = model(pixel_values)
+                        loss = _highlight_loss(include_logits, phase_logits, include_targets, phase_targets)
+                    else:
+                        logits = model(pixel_values)
+                        loss = F.cross_entropy(logits, labels)
                 total_val_loss += loss.item()
-                preds = logits.argmax(dim=1)
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
+                if args.task == "highlight":
+                    batch_include_correct, batch_include_total = _masked_accuracy(include_logits, include_targets)
+                    batch_phase_correct, batch_phase_total = _masked_accuracy(phase_logits, phase_targets)
+                    include_correct += batch_include_correct
+                    include_total += batch_include_total
+                    phase_correct += batch_phase_correct
+                    phase_total += batch_phase_total
+                    boundary_mae = _boundary_mae_seconds(include_logits, include_targets)
+                    if boundary_mae is not None:
+                        boundary_errors.append(boundary_mae)
+                else:
+                    preds = logits.argmax(dim=1)
+                    correct += (preds == labels).sum().item()
+                    total += labels.size(0)
                 if val_idx == 1 or val_idx == len(val_loader) or val_idx % progress_interval == 0:
                     print(_progress_line("valid", val_idx, len(val_loader), epoch=epoch, epochs=epochs), flush=True)
 
         avg_val_loss = total_val_loss / max(len(val_loader), 1)
-        accuracy = correct / max(total, 1)
+        accuracy = include_correct / max(include_total, 1) if args.task == "highlight" else correct / max(total, 1)
         metrics = {
             "run_id": args.run_id,
             "slice": int(args.slice),
+            "task": args.task,
             "status": "running",
             "phase": "epoch_complete",
             "epoch": epoch,
@@ -554,13 +877,33 @@ def main() -> int:
             "val_loss": round(avg_val_loss, 4),
             "accuracy": round(accuracy, 4),
         }
+        if args.task == "highlight":
+            metrics.update(
+                {
+                    "include_accuracy": round(include_correct / max(include_total, 1), 4),
+                    "phase_accuracy": round(phase_correct / max(phase_total, 1), 4),
+                    "boundary_mae_sec": round(float(np.mean(boundary_errors)), 3) if boundary_errors else None,
+                }
+            )
         _write_metrics(metrics_path, metrics)
         print(json.dumps(metrics), flush=True)
 
         if avg_val_loss < best_val_loss and not args.smoke_test:
             best_val_loss = avg_val_loss
             patience_left = 4
-            torch.save(model.state_dict(), str(output_dir / "videomae_lol_best.pt"))
+            if args.task == "highlight":
+                torch.save(
+                    {
+                        "task": "highlight",
+                        "context_seconds": HIGHLIGHT_CONTEXT_SECONDS,
+                        "input_frames": HIGHLIGHT_INPUT_FRAMES,
+                        "phase_names": PHASE_NAMES,
+                        "model_state": model.state_dict(),
+                    },
+                    str(checkpoint_path),
+                )
+            else:
+                torch.save(model.state_dict(), str(checkpoint_path))
             print(f"Checkpoint saved at epoch {epoch}", flush=True)
         else:
             patience_left -= 1
@@ -571,6 +914,7 @@ def main() -> int:
     final_metrics = {
         "run_id": args.run_id,
         "slice": int(args.slice),
+        "task": args.task,
         "status": "complete",
         "phase": "complete",
         "epoch": min(epoch, epochs),

@@ -6,7 +6,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 
 - Accepts an existing `.mp4` clip path through the dashboard or `/process` API. The backend also has a `/jobs` upload endpoint, but the current dashboard uses local paths.
 - Extracts full-frame and minimap frames with OpenCV.
-- Detects likely fight timing with a fine-tuned VideoMAE checkpoint, falling back to a heuristic score when the checkpoint is missing or inference fails.
+- Detects post-worthy trim timing with the fine-tuned VideoMAE highlight editor. Jobs fail if that checkpoint is missing or cannot produce a trim.
 - Detects player/enemy context from YOLO minimap champion detections, temporal team-color tracking, HUD portraits, health bars, and optional full-frame YOLO classification.
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
@@ -89,33 +89,33 @@ TIKTOK_AUTH_SUCCESS_URL=http://127.0.0.1:5173
 
 TikTok's production web Login Kit requires registered `https` redirect URIs. Use the dashboard's TikTok section on a completed job to connect an account, upload to inbox, or start Direct Post.
 
-## Fight Detection And VideoMAE
+## Highlight Editing And VideoMAE
 
-The current fight detector loads `checkpoints/videomae_lol_best.pt` when present. The model is based on `MCG-NJU/videomae-base` with a small binary classifier head that predicts fight versus non-fight for 16-second windows.
+The pipeline requires `checkpoints/videomae_lol_highlight_editor.pt`. That model predicts the post-worthy trim directly from the raw one-minute clip: an include/exclude timeline plus phase labels (`exclude`, `buildup`, `fight`, `payoff`). If the highlight editor is missing, cannot load, or does not select an include span, the job fails so the model issue is visible.
 
 Fine-tuning is handled by `backend/trainer_worker.py`:
 
-- Labels provide `fight_start` and `fight_end` for each training clip.
-- The dataset samples 16-second windows from each clip.
-- A window is positive when at least half of its seconds overlap the labeled fight.
-- A window is negative when it has minimal overlap with the labeled fight.
-- Positive and negative windows are balanced before training.
+- Highlight labels use `clip_start` and `clip_end` as the final post-worthy span.
+- Phase labels are derived from `clip_start -> fight_start -> fight_end -> clip_end`.
+- The default `highlight` task samples 16 frames across the raw 60-second context and predicts per-second include/exclude plus phase classes.
+- The legacy `fight` task still samples 16-second windows, marks positives by fight overlap, and balances positive/negative windows.
 - Frames are resized to 224x224, normalized with ImageNet stats, and passed through VideoMAE.
-- The classifier is trained with AdamW, cosine warmup scheduling, gradient accumulation, validation loss tracking, and early stopping.
+- The heads are trained with AdamW, cosine warmup scheduling, gradient accumulation, validation loss tracking, and early stopping.
 
 The first training pass overfit because the dataset was too small and too easy: many negative windows came from the same source clips and did not represent enough real non-fight gameplay. That produced a checkpoint that could memorize the training distribution better than it generalized to new clips.
 
-## Fight Training Status
+## Highlight Training Status
 
-The current branch includes the VideoMAE trainer in `backend/trainer.py` and `backend/trainer_worker.py`. It trains from a labels JSON file containing `filename`, `raw_path`, `fight_start`, `fight_end`, `fight_segments`, and duration fields. `raw_path` is preferred so one training run can use source clips from multiple folders; `--clips_dir` remains a fallback for older labels that only contain filenames. It can also reuse precomputed frame arrays from `precomputed/` when matching `.npy` files exist.
+The current branch includes the VideoMAE trainer in `backend/trainer.py` and `backend/trainer_worker.py`. The default `--task highlight` trains from a labels JSON file containing `filename`, `raw_path`, `clip_start`, `clip_end`, `fight_start`, `fight_end`, `fight_segments`, and duration fields. `raw_path` is preferred so one training run can use source clips from multiple folders; `--clips_dir` remains a fallback for older labels that only contain filenames. It can also reuse precomputed frame arrays from `precomputed/` when matching `.npy` files exist.
 
-By default, fine-tuning freezes most of VideoMAE and trains the classifier head plus the final two encoder layers. Use `--no-freeze_backbone` for a full-backbone run, or adjust `--unfreeze_last_n_layers`, `--classifier_lr`, and `--backbone_lr` for a narrower or wider fine-tune. The trainer prints per-batch progress bars and writes live metrics to `slice_0/metrics.json` under the output directory.
+By default, fine-tuning freezes most of VideoMAE and trains the highlight heads plus the final two encoder layers. Use `--task fight` for the legacy binary fight-window trainer. Use `--no-freeze_backbone` for a full-backbone run, or adjust `--unfreeze_last_n_layers`, `--classifier_lr`, and `--backbone_lr` for a narrower or wider fine-tune. The trainer prints per-batch progress bars and writes live metrics to `slice_0/metrics.json` under the output directory.
 
 Example direct training command:
 
 ```powershell
 .\.venv\Scripts\python.exe backend\trainer.py `
   --labels "D:\Codex Projects\CS668 LoL Auto Clip Trimmer\data\training\videomae_labels.json" `
+  --task highlight `
   --epochs 25 `
   --batch_size 4 `
   --output_dir "D:\Codex Projects\CS668 LoL Auto Clip Trimmer\checkpoints\videomae_20260716" `
@@ -126,9 +126,10 @@ Example direct training command:
 
 The backend also exposes `POST /train` and `GET /train/stream` for starting a run and streaming metrics. The Vite dev server proxies those routes, but the current frontend does not expose training controls.
 
-Future fight-boundary retraining should still focus on better negative samples:
+Future highlight-editor retraining should focus on reviewed examples that represent your posting style:
 
-- Add varied non-fight windows from full gameplay clips.
+- Keep `clip_start` and `clip_end` aligned to the actual posted edit.
+- Review noisy `fight_start`/`fight_end` values because they define buildup/fight/payoff phases.
 - Save precomputed frame arrays under `precomputed/` or a branch-specific precomputed directory.
 - Keep train/validation clips separated by source video where possible.
 
@@ -163,7 +164,8 @@ Useful follow-up work:
 
 This project includes trained weights and a sample clip through Git LFS:
 
-- `checkpoints/videomae_lol_best.pt`: fine-tuned VideoMAE fight detector.
+- `checkpoints/videomae_lol_highlight_editor.pt`: fine-tuned VideoMAE highlight editor.
+- `checkpoints/videomae_lol_best.pt`: legacy fine-tuned VideoMAE fight detector, kept for the optional `--task fight` trainer path.
 - `checkpoints/minimap_yolov8s_best.pt`: YOLOv8 minimap champion detector.
 - `TestClip.mp4`: sample input clip for testing the pipeline.
 
@@ -264,10 +266,11 @@ Leave `LOL_CLIP_VIDEO_BITRATE` empty to use CRF mode instead. Lower CRF values i
 
 The trained checkpoint files are intentionally tracked with Git LFS so users can run the pipeline without retraining:
 
+- `checkpoints/videomae_lol_highlight_editor.pt`
 - `checkpoints/videomae_lol_best.pt`
 - `checkpoints/minimap_yolov8s_best.pt`
 
-If the VideoMAE checkpoint is missing, fight detection falls back to heuristics.
+If the highlight editor checkpoint is missing or fails, processing stops with an error. This is intentional: the trimming decision should come from the trained highlight editor, not a hardcoded padding or heuristic path.
 
 ## Secrets
 

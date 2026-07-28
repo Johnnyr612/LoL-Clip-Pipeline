@@ -42,6 +42,7 @@ class TrainingCoordinator:
         backbone_lr: float = 1e-5,
         val_fraction: float = 0.15,
         progress_interval: int = 5,
+        task: str = "highlight",
     ) -> str:
         if self.process and self.process.poll() is None:
             return self.run_id or "running"
@@ -73,6 +74,8 @@ class TrainingCoordinator:
             str(val_fraction),
             "--progress-interval",
             str(progress_interval),
+            "--task",
+            task,
         ]
         command.append("--freeze-backbone" if freeze_backbone else "--no-freeze-backbone")
         if batch_size is not None:
@@ -109,6 +112,7 @@ def get_mig_device_uuid(slice_index: int) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch LoL clip fight-boundary training on a MIG slice.")
+    parser.add_argument("--task", choices=["highlight", "fight"], default="highlight", help="Training objective: highlight editor timeline or legacy fight window classifier.")
     parser.add_argument("--clips_dir", type=Path, default=None, help="Fallback folder containing training .mp4 files when labels omit raw_path.")
     parser.add_argument("--labels", required=True, type=Path, help="Path to labels JSON file.")
     parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs.")
@@ -172,6 +176,8 @@ def main() -> int:
         str(args.val_fraction),
         "--progress-interval",
         str(args.progress_interval),
+        "--task",
+        args.task,
     ]
     command.append("--freeze-backbone" if args.freeze_backbone else "--no-freeze-backbone")
     if clips_dir is not None:
@@ -179,7 +185,8 @@ def main() -> int:
 
     logger.info("Starting training run %s", run_id)
     logger.info(
-        "clips_dir=%s labels=%s epochs=%s batch_size=%s output_dir=%s freeze_backbone=%s unfreeze_last_n_layers=%s",
+        "task=%s clips_dir=%s labels=%s epochs=%s batch_size=%s output_dir=%s freeze_backbone=%s unfreeze_last_n_layers=%s",
+        args.task,
         clips_dir,
         labels,
         args.epochs,

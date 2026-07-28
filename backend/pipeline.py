@@ -13,12 +13,8 @@ from .encoder import EncoderError, VideoEncoder, describe_encode_settings
 from .fight_detector import (
     FightDetector,
     TrimSettings,
-    add_output_context,
-    apply_dialog_extension,
-    boundaries_from_scores,
     estimate_combat_screen_x_positions,
     estimate_visible_enemy_count,
-    finish_on_kill_or_death,
 )
 from .frame_io import FrameDecodeError, decode_video
 from .media_probe import MediaProbeError, MediaProfile, probe_media_profile
@@ -62,7 +58,6 @@ class ClipPipeline:
         self.encoder = VideoEncoder()
 
     async def run(self, source_path: Path, job_id: str | None = None, trim_settings: TrimSettings | None = None) -> str:
-        settings = trim_settings or TrimSettings()
         job_id = job_id or uuid.uuid4().hex
         db_path = self.db_path
         flags: list[str] = []
@@ -173,27 +168,20 @@ class ClipPipeline:
                 job_id,
                 "stage3_fight",
                 10,
-                "Loading VideoMAE fight detector...",
+                "Loading VideoMAE highlight editor...",
             )
-            scores = self.fight_detector.score_windows(bundle.full_frames, bundle.timestamps_full)
-            fight_start, fight_end, fight_flags = boundaries_from_scores(scores, validation.duration, settings)
+            trim = self.fight_detector.predict_highlight_trim(
+                bundle.full_frames,
+                bundle.timestamps_full,
+                validation.duration,
+            )
             await update_job_progress(
                 db_path,
                 job_id,
                 "stage3_fight",
                 50,
-                f"Fight detected: {fight_start:.1f}s to {fight_end:.1f}s",
+                f"Highlight editor selected: {trim.clip_start:.1f}s to {trim.clip_end:.1f}s",
             )
-            dialog = self.fight_detector.transcribe(bundle.audio_path)
-            trim_result = apply_dialog_extension(fight_start, fight_end, validation.duration, dialog)
-            trim = finish_on_kill_or_death(
-                replace(trim_result, flags=fight_flags + trim_result.flags),
-                bundle.full_frames,
-                bundle.timestamps_full,
-                validation.duration,
-                settings,
-            )
-            trim = add_output_context(trim, validation.duration, settings)
             player_champion, player_champion_score = _detect_player_champion(
                 self.minimap_detector,
                 bundle.full_frames,
