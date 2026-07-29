@@ -1,5 +1,5 @@
 import React from "react";
-import type { JobRecord, OutputFile } from "./types";
+import type { HighlightCheckpoint, JobRecord, OutputFile } from "./types";
 
 const stages = [
   "queued",
@@ -32,6 +32,11 @@ type TrimSettingsState = {
   combat_event_end_padding_sec: number;
   max_pre_fight_lead_sec: number;
   min_clip_duration_sec: number;
+};
+
+type HighlightCheckpointsPayload = {
+  checkpoints: HighlightCheckpoint[];
+  default_checkpoint: string;
 };
 
 const defaultTrimSettings: TrimSettingsState = {
@@ -126,6 +131,12 @@ function formatModified(value: string) {
   }).format(date);
 }
 
+function checkpointSummary(checkpoint?: HighlightCheckpoint) {
+  if (!checkpoint) return "Selected checkpoint will be used for this job.";
+  const activeText = checkpoint.active ? "active default" : "saved experiment";
+  return `${activeText} - ${formatFileSize(checkpoint.size)} - ${formatModified(checkpoint.modified_at)}`;
+}
+
 function outputFileToJob(output: OutputFile): JobRecord {
   return {
     id: `output:${output.filename}`,
@@ -158,6 +169,8 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const [sourcePath, setSourcePath] = React.useState("");
   const [jobs, setJobs] = React.useState<JobRecord[]>([]);
   const [outputs, setOutputs] = React.useState<OutputFile[]>([]);
+  const [checkpoints, setCheckpoints] = React.useState<HighlightCheckpoint[]>([]);
+  const [selectedCheckpoint, setSelectedCheckpoint] = React.useState("");
   const [outputDir, setOutputDir] = React.useState("");
   const [outputsOpen, setOutputsOpen] = React.useState(true);
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
@@ -195,11 +208,28 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
     [onSelectJob, selectedJobId]
   );
 
+  const refreshCheckpoints = React.useCallback(async () => {
+    const payload = await fetchJsonOr<HighlightCheckpointsPayload>("/checkpoints/highlight", {
+      checkpoints: [],
+      default_checkpoint: ""
+    });
+    const nextCheckpoints: HighlightCheckpoint[] = Array.isArray(payload.checkpoints) ? payload.checkpoints : [];
+    setCheckpoints(nextCheckpoints);
+    setSelectedCheckpoint((current) => {
+      if (current && nextCheckpoints.some((item: HighlightCheckpoint) => item.path === current)) {
+        return current;
+      }
+      const active = nextCheckpoints.find((item: HighlightCheckpoint) => item.active);
+      return active?.path ?? payload.default_checkpoint ?? nextCheckpoints[0]?.path ?? "";
+    });
+  }, []);
+
   React.useEffect(() => {
     void refreshJobs();
+    void refreshCheckpoints();
     const timer = window.setInterval(() => void refreshJobs(), 2000);
     return () => window.clearInterval(timer);
-  }, [refreshJobs]);
+  }, [refreshCheckpoints, refreshJobs]);
 
   React.useEffect(() => {
     if (!progressJob) {
@@ -244,7 +274,11 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
       const response = await fetch("/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_path: path, trim_settings: trimSettings })
+        body: JSON.stringify({
+          source_path: path,
+          trim_settings: trimSettings,
+          highlight_checkpoint: selectedCheckpoint
+        })
       });
       const payload = await response.json().catch(() => ({}));
 
@@ -307,9 +341,33 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
             {"Example: D:\\Medal\\Clips\\League of Legends\\clip.mp4"}
           </span>
         </label>
+        <label className="field-label">
+          Highlight weights
+          <select
+            className="input-field"
+            disabled={busy || checkpoints.length === 0}
+            onChange={(event) => setSelectedCheckpoint(event.target.value)}
+            value={selectedCheckpoint}
+          >
+            {checkpoints.map((checkpoint) => (
+              <option key={checkpoint.path} value={checkpoint.path}>
+                {checkpoint.filename}
+              </option>
+            ))}
+          </select>
+          {selectedCheckpoint ? (
+            <span className="text-xs font-normal leading-5 text-slate-500 dark:text-slate-400">
+              {checkpointSummary(checkpoints.find((item) => item.path === selectedCheckpoint))}
+            </span>
+          ) : (
+            <span className="text-xs font-normal leading-5 text-danger">
+              No highlight editor checkpoints found in the project checkpoints folder.
+            </span>
+          )}
+        </label>
         <button
           className="button-primary"
-          disabled={!sourcePath || busy}
+          disabled={!sourcePath || busy || !selectedCheckpoint}
           onClick={() => void start()}
           type="button"
         >

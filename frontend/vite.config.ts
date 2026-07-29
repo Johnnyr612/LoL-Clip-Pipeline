@@ -7,6 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/jobs": "http://127.0.0.1:8000",
+      "/checkpoints": "http://127.0.0.1:8000",
       "/process": "http://127.0.0.1:8000",
       "/train": "http://127.0.0.1:8000",
       "/training": "http://127.0.0.1:8000",

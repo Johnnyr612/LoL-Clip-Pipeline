@@ -113,6 +113,43 @@ def _normalize_source_path(value: object) -> Path:
     return Path(raw)
 
 
+def _checkpoints_root() -> Path:
+    return (config.PROJECT_ROOT / "checkpoints").resolve()
+
+
+def _checkpoint_payload(path: Path) -> dict:
+    stat = path.stat()
+    return {
+        "filename": path.name,
+        "path": str(path),
+        "size": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+        "active": path.resolve() == config.VIDEOMAE_HIGHLIGHT_CHECKPOINT.resolve(),
+    }
+
+
+def _resolve_highlight_checkpoint(value: object) -> Path:
+    raw = str(value or "").strip()
+    if not raw:
+        return config.VIDEOMAE_HIGHLIGHT_CHECKPOINT.resolve()
+    quote_pairs = {('"', '"'), ("'", "'")}
+    while len(raw) >= 2 and (raw[0], raw[-1]) in quote_pairs:
+        raw = raw[1:-1].strip()
+
+    root = _checkpoints_root()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise HTTPException(status_code=422, detail="Checkpoint must be inside the project checkpoints folder")
+    if resolved.suffix.lower() != ".pt":
+        raise HTTPException(status_code=422, detail="Checkpoint must be a .pt file")
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail=f"Checkpoint not found: {resolved}")
+    return resolved
+
+
 def _resolve_output_path(relative_path: str) -> Path:
     root = config.OUTPUT_DIR.resolve()
     candidate = (root / relative_path).resolve()
@@ -307,6 +344,24 @@ async def list_output_files(limit: int = 50) -> dict:
     return {"output_dir": str(config.OUTPUT_DIR), "files": files[:safe_limit]}
 
 
+@app.get("/checkpoints/highlight")
+async def list_highlight_checkpoints() -> dict:
+    root = _checkpoints_root()
+    root.mkdir(parents=True, exist_ok=True)
+    files = []
+    for path in root.glob("videomae_lol_highlight*.pt"):
+        try:
+            files.append(_checkpoint_payload(path.resolve()))
+        except OSError:
+            continue
+    files.sort(key=lambda item: item["modified_at"], reverse=True)
+    return {
+        "checkpoint_dir": str(root),
+        "default_checkpoint": str(config.VIDEOMAE_HIGHLIGHT_CHECKPOINT.resolve()),
+        "checkpoints": files,
+    }
+
+
 @app.get("/outputs/{relative_path:path}")
 async def output_file(relative_path: str, request: Request):
     output_path = _resolve_output_path(relative_path)
@@ -331,6 +386,7 @@ async def process_existing(payload: dict) -> dict:
         )
     source_path = _normalize_source_path(payload.get("source_path", ""))
     trim_settings = TrimSettingsRequest(**(payload.get("trim_settings") or {})).to_trim_settings()
+    highlight_checkpoint_path = _resolve_highlight_checkpoint(payload.get("highlight_checkpoint", ""))
 
     # Validate input before starting background task
     try:
@@ -353,7 +409,7 @@ async def process_existing(payload: dict) -> dict:
     async def run_background() -> None:
         async with job_semaphore:
             await asyncio.to_thread(
-                lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings))
+                lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings, highlight_checkpoint_path))
             )
 
     asyncio.create_task(run_background())

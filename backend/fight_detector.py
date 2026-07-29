@@ -566,14 +566,21 @@ class FightDetector:
         self._videomae_load_error: str | None = None
         self._highlight_model = None
         self._highlight_device = None
+        self._highlight_checkpoint_path: Path | None = None
         self._highlight_load_error: str | None = None
+        self._highlight_load_error_path: Path | None = None
         self._whisper_model = None
         self._whisper_load_error: str | None = None
 
-    def _load_highlight_editor(self):
-        if self._highlight_model is not None and self._highlight_device is not None:
+    def _load_highlight_editor(self, checkpoint_path: Path | None = None):
+        resolved_checkpoint = Path(str(checkpoint_path or config.VIDEOMAE_HIGHLIGHT_CHECKPOINT)).resolve()
+        if (
+            self._highlight_model is not None
+            and self._highlight_device is not None
+            and self._highlight_checkpoint_path == resolved_checkpoint
+        ):
             return self._highlight_model, self._highlight_device
-        if self._highlight_load_error:
+        if self._highlight_load_error and self._highlight_load_error_path == resolved_checkpoint:
             raise RuntimeError(self._highlight_load_error)
 
         try:
@@ -581,11 +588,10 @@ class FightDetector:
             import torch.nn as nn
             from transformers import VideoMAEModel
 
-            checkpoint_path = Path(str(config.VIDEOMAE_HIGHLIGHT_CHECKPOINT))
-            if not checkpoint_path.exists():
-                raise FileNotFoundError(f"VideoMAE highlight checkpoint not found at {checkpoint_path}")
+            if not resolved_checkpoint.exists():
+                raise FileNotFoundError(f"VideoMAE highlight checkpoint not found at {resolved_checkpoint}")
 
-            checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+            checkpoint = torch.load(str(resolved_checkpoint), map_location="cpu")
             context_seconds = int(checkpoint.get("context_seconds", config.HIGHLIGHT_CONTEXT_SECONDS))
             phase_count = len(checkpoint.get("phase_names", ("exclude", "buildup", "fight", "payoff")))
             state_dict = checkpoint.get("model_state", checkpoint)
@@ -611,9 +617,13 @@ class FightDetector:
             model.eval()
             self._highlight_model = model
             self._highlight_device = device
+            self._highlight_checkpoint_path = resolved_checkpoint
+            self._highlight_load_error = None
+            self._highlight_load_error_path = None
             return model, device
         except Exception as exc:  # noqa: BLE001 - surface the loader error on the next inference attempt.
             self._highlight_load_error = str(exc)
+            self._highlight_load_error_path = resolved_checkpoint
             raise
 
     def _load_videomae(self):
@@ -660,6 +670,7 @@ class FightDetector:
         full_frames: np.ndarray,
         timestamps: np.ndarray,
         source_duration: float,
+        checkpoint_path: Path | None = None,
     ) -> TrimResult:
         if len(full_frames) == 0 or len(timestamps) == 0:
             raise HighlightEditorError("VideoMAE highlight editor received no decoded frames")
@@ -668,7 +679,7 @@ class FightDetector:
             import torchvision.transforms.functional as TF
 
             try:
-                model, device = self._load_highlight_editor()
+                model, device = self._load_highlight_editor(checkpoint_path)
             except Exception as exc:  # noqa: BLE001 - preserve the original loader failure as the cause.
                 raise HighlightEditorError(f"VideoMAE highlight editor failed to load: {exc}") from exc
 

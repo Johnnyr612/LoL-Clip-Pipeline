@@ -57,7 +57,13 @@ class ClipPipeline:
         self.cropper = AdaptiveCropper()
         self.encoder = VideoEncoder()
 
-    async def run(self, source_path: Path, job_id: str | None = None, trim_settings: TrimSettings | None = None) -> str:
+    async def run(
+        self,
+        source_path: Path,
+        job_id: str | None = None,
+        trim_settings: TrimSettings | None = None,
+        highlight_checkpoint_path: Path | None = None,
+    ) -> str:
         job_id = job_id or uuid.uuid4().hex
         db_path = self.db_path
         flags: list[str] = []
@@ -70,7 +76,8 @@ class ClipPipeline:
                 "media_profile": {
                     "input": validation.media_profile.to_debug_dict(),
                     "encode_settings": describe_encode_settings(validation.media_profile),
-                }
+                },
+                "highlight_checkpoint": str((highlight_checkpoint_path or config.VIDEOMAE_HIGHLIGHT_CHECKPOINT).resolve()),
             }
             if not validation.has_audio:
                 flags.append("no_audio")
@@ -174,6 +181,7 @@ class ClipPipeline:
                 bundle.full_frames,
                 bundle.timestamps_full,
                 validation.duration,
+                highlight_checkpoint_path,
             )
             await update_job_progress(
                 db_path,

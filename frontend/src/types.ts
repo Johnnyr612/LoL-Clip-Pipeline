@@ -23,6 +23,14 @@ export type OutputFile = {
   modified_at: string;
 };
 
+export type HighlightCheckpoint = {
+  filename: string;
+  path: string;
+  size: number;
+  modified_at: string;
+  active: boolean;
+};
+
 export type TrainingMetric = {
   status?: string;
   epoch?: number;
