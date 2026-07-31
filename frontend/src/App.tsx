@@ -4,17 +4,30 @@ import "./index.css";
 import { OutputPanel } from "./OutputPanel";
 import { JobDashboard } from "./JobDashboard";
 import { LabelReview } from "./LabelReview";
+import { SettingsPanel } from "./SettingsPanel";
 import type { JobRecord } from "./types";
 
 function App() {
   const [selectedJob, setSelectedJob] = React.useState<JobRecord | null>(null);
   const [darkMode, setDarkMode] = React.useState(() => window.localStorage.getItem("lolClipTheme") === "dark");
-  const [activeView, setActiveView] = React.useState<"jobs" | "labels">("jobs");
+  const [activeView, setActiveView] = React.useState<"jobs" | "labels" | "settings">("jobs");
+  const [inputFolders, setInputFolders] = React.useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("lolClipInputFolders") || "[]");
+      return Array.isArray(saved) ? saved.filter((item): item is string => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  });
 
   React.useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
     window.localStorage.setItem("lolClipTheme", darkMode ? "dark" : "light");
   }, [darkMode]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem("lolClipInputFolders", JSON.stringify(inputFolders));
+  }, [inputFolders]);
 
   return (
     <main className="app-page">
@@ -41,6 +54,13 @@ function App() {
               Label Review
             </button>
             <button
+              className={activeView === "settings" ? "button-primary" : "button"}
+              onClick={() => setActiveView("settings")}
+              type="button"
+            >
+              Settings
+            </button>
+            <button
               className="button"
               onClick={() => setDarkMode((value) => !value)}
               type="button"
@@ -59,9 +79,13 @@ function App() {
             <OutputPanel job={selectedJob} />
           </section>
         </div>
-      ) : (
+      ) : activeView === "labels" ? (
         <div className="mx-auto max-w-7xl px-5 py-5">
           <LabelReview />
+        </div>
+      ) : (
+        <div className="mx-auto max-w-7xl px-5 py-5">
+          <SettingsPanel inputFolders={inputFolders} setInputFolders={setInputFolders} />
         </div>
       )}
     </main>

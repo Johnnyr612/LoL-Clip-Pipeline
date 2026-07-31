@@ -40,10 +40,47 @@ def _bitrate_label(bits_per_second: int | None) -> str:
     return str(bits_per_second)
 
 
+def _bitrate_value(label: str) -> int | None:
+    text = label.strip().lower()
+    if not text:
+        return None
+    multiplier = 1
+    if text.endswith("m"):
+        multiplier = 1_000_000
+        text = text[:-1]
+    elif text.endswith("k"):
+        multiplier = 1_000
+        text = text[:-1]
+    try:
+        return int(float(text) * multiplier)
+    except ValueError:
+        return None
+
+
+def _rate_at_least(configured: str, selected_bitrate: str) -> str:
+    if not configured:
+        return selected_bitrate
+    configured_value = _bitrate_value(configured)
+    selected_value = _bitrate_value(selected_bitrate)
+    if configured_value is not None and selected_value is not None and configured_value < selected_value:
+        return selected_bitrate
+    return configured
+
+
+def _matched_source_bitrate(source_profile: MediaProfile | None = None) -> int | None:
+    if not config.FFMPEG_MATCH_SOURCE_ENCODING or source_profile is None:
+        return None
+    source_bitrate = source_profile.video_bitrate or source_profile.total_bitrate
+    if source_bitrate is None or source_bitrate <= 0:
+        return None
+    multiplier = max(1.0, float(config.FFMPEG_SOURCE_BITRATE_MULTIPLIER))
+    return int(round(source_bitrate * multiplier))
+
+
 def _selected_video_bitrate(source_profile: MediaProfile | None = None) -> str:
-    if config.FFMPEG_MATCH_SOURCE_ENCODING and source_profile is not None:
-        source_bitrate = source_profile.video_bitrate or source_profile.total_bitrate
-        label = _bitrate_label(source_bitrate)
+    matched_bitrate = _matched_source_bitrate(source_profile)
+    if matched_bitrate is not None:
+        label = _bitrate_label(matched_bitrate)
         if label:
             return label
     return config.FFMPEG_VIDEO_BITRATE
@@ -52,11 +89,17 @@ def _selected_video_bitrate(source_profile: MediaProfile | None = None) -> str:
 def _selected_output_fps(source_profile: MediaProfile | None = None) -> str:
     if not config.FFMPEG_MATCH_SOURCE_ENCODING or source_profile is None or source_profile.fps is None:
         return str(config.OUTPUT_FPS)
-    fps = source_profile.fps
-    for common_fps in (24, 25, 30, 50, 60, 120):
-        if abs(fps - common_fps) < 0.5:
-            return str(common_fps)
-    return f"{fps:.3f}".rstrip("0").rstrip(".")
+    return f"{source_profile.fps:.3f}".rstrip("0").rstrip(".")
+
+
+def _audio_encode_args(source_profile: MediaProfile | None = None) -> list[str]:
+    if (
+        config.FFMPEG_MATCH_SOURCE_ENCODING
+        and source_profile is not None
+        and (source_profile.audio_codec or "").lower() == "aac"
+    ):
+        return ["-c:a", "copy"]
+    return ["-c:a", "aac", "-b:a", config.FFMPEG_AUDIO_BITRATE]
 
 
 def describe_encode_settings(source_profile: MediaProfile | None = None) -> dict:
@@ -67,12 +110,14 @@ def describe_encode_settings(source_profile: MediaProfile | None = None) -> dict
         "encoder": config.FFMPEG_VIDEO_ENCODER.lower(),
         "fps": fps,
         "target_video_bitrate": bitrate or None,
-        "maxrate": (config.FFMPEG_VIDEO_MAXRATE or bitrate) if bitrate else None,
-        "bufsize": (config.FFMPEG_VIDEO_BUFSIZE or bitrate) if bitrate else None,
+        "maxrate": _rate_at_least(config.FFMPEG_VIDEO_MAXRATE, bitrate) if bitrate else None,
+        "bufsize": _rate_at_least(config.FFMPEG_VIDEO_BUFSIZE, bitrate) if bitrate else None,
+        "source_bitrate_multiplier": config.FFMPEG_SOURCE_BITRATE_MULTIPLIER if config.FFMPEG_MATCH_SOURCE_ENCODING else None,
         "crf": None if bitrate or config.FFMPEG_VIDEO_ENCODER.lower() == "h264_nvenc" else config.FFMPEG_CRF,
         "preset": config.FFMPEG_NVENC_PRESET if config.FFMPEG_VIDEO_ENCODER.lower() == "h264_nvenc" else config.FFMPEG_PRESET,
         "rate_control": config.FFMPEG_NVENC_RC if config.FFMPEG_VIDEO_ENCODER.lower() == "h264_nvenc" else None,
-        "audio_bitrate": config.FFMPEG_AUDIO_BITRATE,
+        "audio_codec": "copy" if _audio_encode_args(source_profile) == ["-c:a", "copy"] else "aac",
+        "audio_bitrate": None if _audio_encode_args(source_profile) == ["-c:a", "copy"] else config.FFMPEG_AUDIO_BITRATE,
         "pixel_format": "yuv420p",
         "output_width": config.OUTPUT_WIDTH,
         "output_height": config.OUTPUT_HEIGHT,
@@ -92,8 +137,8 @@ def _video_encode_args(source_profile: MediaProfile | None = None) -> list[str]:
     bitrate = _selected_video_bitrate(source_profile)
     if bitrate:
         args.extend(["-b:v", bitrate])
-        args.extend(["-maxrate", config.FFMPEG_VIDEO_MAXRATE or bitrate])
-        args.extend(["-bufsize", config.FFMPEG_VIDEO_BUFSIZE or bitrate])
+        args.extend(["-maxrate", _rate_at_least(config.FFMPEG_VIDEO_MAXRATE, bitrate)])
+        args.extend(["-bufsize", _rate_at_least(config.FFMPEG_VIDEO_BUFSIZE, bitrate)])
     elif encoder != "h264_nvenc":
         args.extend(["-crf", str(config.FFMPEG_CRF)])
     args.extend(["-pix_fmt", "yuv420p"])
@@ -264,6 +309,7 @@ class VideoEncoder:
             clip_duration = max(0.0, clip_end - clip_start)
             crop_x = _crop_x_expression(crops, crop_timestamps, clip_start, clip_end)
             output_fps = _selected_output_fps(source_profile)
+            gop_size = str(max(1, int(round(float(output_fps)))))
             vf = f"crop={config.CROP_W}:{config.CROP_H}:x={crop_x}:y=0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"
             _run_ffmpeg(
                 [
@@ -281,15 +327,12 @@ class VideoEncoder:
                     output_fps,
                     *_video_encode_args(source_profile),
                     "-g",
-                    output_fps,
+                    gop_size,
                     "-keyint_min",
-                    output_fps,
+                    gop_size,
                     "-sc_threshold",
                     "0",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    config.FFMPEG_AUDIO_BITRATE,
+                    *_audio_encode_args(source_profile),
                     "-movflags",
                     "+faststart",
                     str(final_output),

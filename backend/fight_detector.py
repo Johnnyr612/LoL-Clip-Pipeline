@@ -270,6 +270,32 @@ def add_output_context(
     )
 
 
+def apply_highlight_trim_settings(
+    trim: TrimResult,
+    full_frames: np.ndarray,
+    timestamps: np.ndarray,
+    source_duration: float,
+    trim_settings: TrimSettings | None = None,
+) -> TrimResult:
+    settings = trim_settings or TrimSettings()
+    desired_start = max(0.0, trim.fight_start - settings.fight_start_preroll_sec)
+    clip_start = min(trim.clip_start, desired_start)
+    flags = list(trim.flags)
+    if clip_start < trim.clip_start:
+        flags.append("highlight_preroll_applied")
+    adjusted = TrimResult(
+        clip_start=round(clip_start, 3),
+        clip_end=trim.clip_end,
+        fight_start=trim.fight_start,
+        fight_end=trim.fight_end,
+        fight_duration=trim.fight_duration,
+        dialog_segments=trim.dialog_segments,
+        flags=flags,
+    )
+    adjusted = finish_on_kill_or_death(adjusted, full_frames, timestamps, source_duration, settings)
+    return add_output_context(adjusted, source_duration, settings)
+
+
 def estimate_visible_enemy_count(
     full_frames: np.ndarray,
     timestamps: np.ndarray,

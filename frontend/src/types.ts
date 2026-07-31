@@ -81,9 +81,11 @@ export type MediaProfileDebug = {
     target_video_bitrate?: string | null;
     maxrate?: string | null;
     bufsize?: string | null;
+    source_bitrate_multiplier?: number | null;
     crf?: number | null;
     preset?: string | null;
     rate_control?: string | null;
+    audio_codec?: string | null;
     audio_bitrate?: string | null;
     pixel_format?: string | null;
     output_width?: number | null;

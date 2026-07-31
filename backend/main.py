@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import platform
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +100,10 @@ class TrimSettingsRequest(BaseModel):
         )
 
 
+class OpenFolderRequest(BaseModel):
+    path: str
+
+
 def _clamp_float(value: object, minimum: float, maximum: float) -> float:
     try:
         number = float(value)
@@ -111,6 +118,43 @@ def _normalize_source_path(value: object) -> Path:
     while len(raw) >= 2 and (raw[0], raw[-1]) in quote_pairs:
         raw = raw[1:-1].strip()
     return Path(raw)
+
+
+def _normalize_folder_path(value: object) -> Path:
+    raw = str(value or "").strip()
+    quote_pairs = {('"', '"'), ("'", "'")}
+    while len(raw) >= 2 and (raw[0], raw[-1]) in quote_pairs:
+        raw = raw[1:-1].strip()
+    return Path(raw).expanduser().resolve()
+
+
+def _folder_payload(key: str, label: str, path: Path, kind: str) -> dict:
+    resolved = path.expanduser().resolve()
+    return {
+        "key": key,
+        "label": label,
+        "path": str(resolved),
+        "kind": kind,
+        "exists": resolved.is_dir(),
+    }
+
+
+def _open_folder_in_file_manager(path: Path) -> None:
+    system = platform.system().lower()
+    if system == "windows":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+    elif system == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
+
+
+async def _open_existing_folder(raw_path: object) -> dict:
+    path = _normalize_folder_path(raw_path)
+    if not path.is_dir():
+        raise HTTPException(status_code=404, detail=f"Folder not found: {path}")
+    await asyncio.to_thread(_open_folder_in_file_manager, path)
+    return {"opened": True, "path": str(path)}
 
 
 def _checkpoints_root() -> Path:
@@ -222,6 +266,25 @@ async def startup() -> None:
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/settings/folders")
+async def settings_folders() -> dict:
+    upload_dir = config.APPDATA_DIR / "uploads"
+    folders = [
+        _folder_payload("output", "Output clips", config.OUTPUT_DIR, "output"),
+        _folder_payload("uploads", "Uploaded input clips", upload_dir, "input"),
+        _folder_payload("project", "Project folder", config.PROJECT_ROOT, "project"),
+        _folder_payload("checkpoints", "Checkpoint weights", config.PROJECT_ROOT / "checkpoints", "weights"),
+        _folder_payload("logs", "Logs", config.LOG_DIR, "logs"),
+        _folder_payload("temp", "Temp files", config.TEMP_DIR, "temp"),
+    ]
+    return {"folders": folders}
+
+
+@app.post("/settings/open-folder")
+async def open_settings_folder(req: OpenFolderRequest) -> dict:
+    return await _open_existing_folder(req.path)
 
 
 @app.get("/tiktok/status")

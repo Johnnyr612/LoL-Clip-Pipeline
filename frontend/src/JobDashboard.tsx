@@ -220,7 +220,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         return current;
       }
       const active = nextCheckpoints.find((item: HighlightCheckpoint) => item.active);
-      return active?.path ?? payload.default_checkpoint ?? nextCheckpoints[0]?.path ?? "";
+      return active?.path ?? nextCheckpoints[0]?.path ?? payload.default_checkpoint ?? "";
     });
   }, []);
 

@@ -6,7 +6,7 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
   const outputUrl = outputUrlFromPath(job?.output_path);
   const [tiktokStatus, setTikTokStatus] = React.useState<TikTokStatus | null>(null);
   const [mode, setMode] = React.useState<"inbox" | "direct">("inbox");
-  const [title, setTitle] = React.useState("");
+  const [description, setDescription] = React.useState("");
   const [privacyLevel, setPrivacyLevel] = React.useState("SELF_ONLY");
   const [disableComment, setDisableComment] = React.useState(false);
   const [disableDuet, setDisableDuet] = React.useState(false);
@@ -33,7 +33,7 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode,
-          title,
+          title: description,
           privacy_level: privacyLevel,
           disable_comment: disableComment,
           disable_duet: disableDuet,
@@ -58,7 +58,7 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="section-kicker">Rendered clip</p>
-          <h2 className="section-title mt-1">Output</h2>
+          <h2 className="section-title mt-1">Description</h2>
           {job?.output_path ? <p className="mt-1 break-all text-xs text-slate-500 dark:text-slate-400">{job.output_path}</p> : null}
         </div>
         {outputUrl ? (
@@ -72,22 +72,14 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
           </div>
         ) : null}
       </div>
-      {outputUrl ? (
-        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-950 p-3 shadow-inner dark:border-slate-800">
-          <video
-            key={outputUrl}
-            className="mx-auto aspect-[3/4] max-h-[640px] w-full rounded-md bg-black object-contain"
-            src={outputUrl}
-            controls
-            playsInline
-            preload="metadata"
-          />
-        </div>
-      ) : (
-        <div className="surface-muted mt-4 flex aspect-[3/4] max-h-[640px] w-full items-center justify-center p-4 text-center text-sm text-slate-500 dark:text-slate-400">
-          Select a completed job or previous output to preview the vertical clip.
-        </div>
-      )}
+      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+        <DescriptionEditor description={description} onChange={setDescription} />
+        <PhonePostPreview
+          description={description}
+          detectionDebug={detectionDebug}
+          outputUrl={outputUrl}
+        />
+      </div>
 
       <MediaProfilePanel detectionDebug={detectionDebug} />
 
@@ -116,12 +108,143 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         setDisableStitch={setDisableStitch}
         setMode={setMode}
         setPrivacyLevel={setPrivacyLevel}
-        setTitle={setTitle}
-        title={title}
+        description={description}
       />
 
       <ChampionDetectionPanel detectionDebug={detectionDebug} />
     </section>
+  );
+}
+
+function DescriptionEditor({
+  description,
+  onChange
+}: {
+  description: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <section className="surface-muted min-h-[420px] p-4">
+      <label className="field-label h-full">
+        Description
+        <textarea
+          className="textarea-field min-h-[280px] flex-1 resize-y"
+          maxLength={2200}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="League of Legends highlight"
+          value={description}
+        />
+        <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
+          {description.length}/2200
+        </span>
+      </label>
+    </section>
+  );
+}
+
+function PhonePostPreview({
+  description,
+  detectionDebug,
+  outputUrl
+}: {
+  description: string;
+  detectionDebug: DetectionDebug;
+  outputUrl: string;
+}) {
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const [currentTime, setCurrentTime] = React.useState(0);
+  const [duration, setDuration] = React.useState(0);
+  const [isPlaying, setIsPlaying] = React.useState(false);
+  const player = detectionDebug.summary?.player;
+  const username = player ? `@${slugifyHandle(player)}` : "@lolclip";
+  const captionText = description.trim() || "League of Legends highlight";
+
+  function togglePlayback() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play();
+    } else {
+      video.pause();
+    }
+  }
+
+  function seekTo(value: string) {
+    const video = videoRef.current;
+    if (!video) return;
+    const nextTime = Number(value);
+    video.currentTime = nextTime;
+    setCurrentTime(nextTime);
+  }
+
+  return (
+    <div className="flex justify-center xl:justify-end">
+      <div className="phone-shell" aria-label="iPhone TikTok-style preview">
+        <div className="phone-screen">
+          {outputUrl ? (
+            <video
+              ref={videoRef}
+              key={`phone-${outputUrl}`}
+              className="phone-video"
+              src={outputUrl}
+              controls
+              onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
+              onPause={() => setIsPlaying(false)}
+              onPlay={() => setIsPlaying(true)}
+              onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+              playsInline
+              preload="metadata"
+            />
+          ) : (
+            <div className="phone-empty">No output</div>
+          )}
+          <div className="phone-status">
+            <span>9:41</span>
+            <span className="phone-status-icons">5G 100%</span>
+          </div>
+          <div className="phone-tabs">
+            <span>Following</span>
+            <strong>For You</strong>
+          </div>
+          {outputUrl ? (
+            <div className="phone-control-bar">
+              <button className="phone-play-button" onClick={togglePlayback} type="button">
+                {isPlaying ? "Pause" : "Play"}
+              </button>
+              <input
+                aria-label="Preview timeline"
+                max={duration || 0}
+                min="0"
+                onChange={(event) => seekTo(event.target.value)}
+                step="0.01"
+                type="range"
+                value={Math.min(currentTime, duration || currentTime)}
+              />
+              <span>{formatVideoTime(currentTime)}</span>
+            </div>
+          ) : null}
+          <div className="phone-action-rail" aria-hidden="true">
+            <span className="phone-avatar">{player?.slice(0, 1).toUpperCase() ?? "L"}</span>
+            <span className="phone-action">♥</span>
+            <span className="phone-action">⌕</span>
+            <span className="phone-action">↗</span>
+            <span className="phone-disc">♪</span>
+          </div>
+          <div className="phone-caption">
+            <strong>{username}</strong>
+            <span>{captionText}</span>
+            <small>Original sound - {username}</small>
+          </div>
+          <div className="phone-bottom-nav" aria-hidden="true">
+            <span>⌂</span>
+            <span>⊕</span>
+            <span>▣</span>
+            <span>♡</span>
+            <span>◉</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -158,6 +281,8 @@ function MediaProfilePanel({ detectionDebug }: { detectionDebug: DetectionDebug 
             <span className="chip chip-neutral">{output?.fps ?? "?"} FPS</span>
             <span className="chip chip-neutral">{output?.target_video_bitrate ?? (output?.crf ? `CRF ${output.crf}` : "auto bitrate")}</span>
             <span className="chip chip-neutral">Preset: {output?.preset ?? "default"}</span>
+            {output?.source_bitrate_multiplier ? <span className="chip chip-neutral">Video: {output.source_bitrate_multiplier.toFixed(2)}x source</span> : null}
+            <span className="chip chip-neutral">Audio: {output?.audio_codec === "copy" ? "copy" : (output?.audio_bitrate ?? "AAC")}</span>
           </div>
         </div>
       </div>
@@ -184,9 +309,8 @@ function TikTokPanel({
   setDisableStitch,
   setMode,
   setPrivacyLevel,
-  setTitle,
   scope,
-  title
+  description
 }: {
   busy: boolean;
   connected: boolean;
@@ -206,9 +330,8 @@ function TikTokPanel({
   setDisableStitch: (value: boolean) => void;
   setMode: (value: "inbox" | "direct") => void;
   setPrivacyLevel: (value: string) => void;
-  setTitle: (value: string) => void;
   scope: string;
-  title: string;
+  description: string;
 }) {
   const requiredScope = mode === "direct" ? "video.publish" : "video.upload";
   const hasRequiredScope = scope.split(",").map((item) => item.trim()).includes(requiredScope);
@@ -253,10 +376,10 @@ function TikTokPanel({
 
         {mode === "direct" ? (
           <div className="grid gap-3">
-            <label className="field-label">
-              Post title
-              <input className="input-field" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional TikTok caption/title" />
-            </label>
+            <p className="surface-muted p-3 text-sm text-slate-600 dark:text-slate-400">
+              Direct Post uses the Description text above as the TikTok title.
+              {description.trim() ? "" : " Add a description before publishing if you want a caption."}
+            </p>
             <label className="field-label">
               Privacy
               <select className="input-field" value={privacyLevel} onChange={(event) => setPrivacyLevel(event.target.value)}>
@@ -367,6 +490,18 @@ function formatFps(value: number | null | undefined) {
   if (!value || value <= 0) return "?";
   const rounded = Math.round(value);
   return Math.abs(value - rounded) < 0.05 ? String(rounded) : value.toFixed(2);
+}
+
+function formatVideoTime(value: number) {
+  if (!Number.isFinite(value) || value < 0) return "0:00";
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.floor(value % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function slugifyHandle(value: string) {
+  const handle = value.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 20);
+  return handle || "lolclip";
 }
 
 function safeJson<T>(value: string | undefined | null, fallback: T): T {

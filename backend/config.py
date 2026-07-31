@@ -21,6 +21,16 @@ def _load_local_env(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
+def _int_env(name: str, default: int) -> int:
+    value = os.environ.get(name, "").strip()
+    return int(value) if value else default
+
+
+def _float_env(name: str, default: float) -> float:
+    value = os.environ.get(name, "").strip()
+    return float(value) if value else default
+
+
 _load_local_env(PROJECT_ROOT / ".env")
 
 
@@ -113,6 +123,9 @@ CROP_Y = 0
 PLAYER_SAFE_LEFT_PX = 220
 PLAYER_SAFE_RIGHT_PX = 590
 PLAYER_CENTER_DEADZONE_PX = 45
+PLAYER_THIRDS_DEADZONE_PX = 45
+PLAYER_THIRDS_LOOK_ROOM_PX = _int_env("LOL_CLIP_THIRDS_LOOK_ROOM_PX", 20)
+PLAYER_COMPOSITION = os.environ.get("LOL_CLIP_PLAYER_COMPOSITION", "thirds").strip().lower()
 THREAT_FRAME_MARGIN_PX = 70
 MINIMAP_UI_AVOID_MARGIN_PX = 30
 # Crop mode:
@@ -132,8 +145,9 @@ STATIC_CROP_X = int(os.environ.get("LOL_CLIP_STATIC_CROP_X", str((1920 - 810) //
 #           camera cut. No sliding.
 #   "pan" - eases between positions at a limited speed.
 CROP_TRANSITION = os.environ.get("LOL_CLIP_CROP_TRANSITION", "cut").strip().lower()
-# Hybrid mode: how far the crop shifts toward the fight side (px).
-HYBRID_OFFSET_PX = int(os.environ.get("LOL_CLIP_HYBRID_OFFSET_PX", "140"))
+# Hybrid mode: how far the crop shifts toward the fight side (px). The default
+# is the exact center-to-third distance for an 810px crop.
+HYBRID_OFFSET_PX = _int_env("LOL_CLIP_HYBRID_OFFSET_PX", round(CROP_W / 6) + PLAYER_THIRDS_LOOK_ROOM_PX)
 # Hybrid mode: how far from the champion the threats must sit (px) before that
 # flank counts as the fight side.
 HYBRID_SIDE_TRIGGER_PX = int(os.environ.get("LOL_CLIP_HYBRID_SIDE_TRIGGER_PX", "170"))
@@ -171,6 +185,7 @@ FFMPEG_NVENC_CQ = os.environ.get("LOL_CLIP_NVENC_CQ", "").strip()
 FFMPEG_VIDEO_BITRATE = os.environ.get("LOL_CLIP_VIDEO_BITRATE", "").strip()
 FFMPEG_VIDEO_MAXRATE = os.environ.get("LOL_CLIP_VIDEO_MAXRATE", "").strip()
 FFMPEG_VIDEO_BUFSIZE = os.environ.get("LOL_CLIP_VIDEO_BUFSIZE", "").strip()
+FFMPEG_SOURCE_BITRATE_MULTIPLIER = _float_env("LOL_CLIP_SOURCE_BITRATE_MULTIPLIER", 1.15)
 FFMPEG_AUDIO_BITRATE = os.environ.get("LOL_CLIP_AUDIO_BITRATE", "320k").strip() or "320k"
 CROP_QUANTIZE_THRESHOLD = 5
 

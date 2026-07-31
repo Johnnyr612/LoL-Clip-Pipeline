@@ -47,6 +47,49 @@ def enforce_center_preference(crop_x: float, player_sx: float) -> float:
     return crop_x
 
 
+def _player_composition() -> str:
+    composition = config.PLAYER_COMPOSITION.strip().lower()
+    return composition if composition in {"center", "thirds"} else "thirds"
+
+
+def _threat_side(player_sx: float, threat_sx: float | None) -> int:
+    if threat_sx is None:
+        return 0
+    delta = threat_sx - player_sx
+    if delta <= -config.HYBRID_SIDE_TRIGGER_PX:
+        return -1
+    if delta >= config.HYBRID_SIDE_TRIGGER_PX:
+        return 1
+    return 0
+
+
+def player_anchor_x(player_sx: float, threat_sx: float | None) -> float:
+    if _player_composition() != "thirds":
+        return config.CROP_W / 2
+    side = _threat_side(player_sx, threat_sx)
+    look_room = max(0, int(config.PLAYER_THIRDS_LOOK_ROOM_PX))
+    if side > 0:
+        return max(config.PLAYER_SAFE_LEFT_PX, config.CROP_W / 3 - look_room)
+    if side < 0:
+        return min(config.PLAYER_SAFE_RIGHT_PX, config.CROP_W * 2 / 3 + look_room)
+    return config.CROP_W / 2
+
+
+def rule_of_thirds_crop_x(player_sx: float, threat_sx: float | None) -> float:
+    return player_sx - player_anchor_x(player_sx, threat_sx)
+
+
+def enforce_thirds_preference(crop_x: float, player_sx: float, threat_sx: float | None) -> float:
+    anchor_x = player_anchor_x(player_sx, threat_sx)
+    if anchor_x == config.CROP_W / 2:
+        return enforce_center_preference(crop_x, player_sx)
+    player_x_in_crop = player_sx - crop_x
+    offset = player_x_in_crop - anchor_x
+    if abs(offset) > config.PLAYER_THIRDS_DEADZONE_PX:
+        crop_x = player_sx - anchor_x
+    return enforce_safe_zone(crop_x, player_sx)
+
+
 def include_threat_in_crop(crop_x: float, player_sx: float, threat_sx: float | None) -> float:
     if threat_sx is None:
         return crop_x
@@ -55,7 +98,13 @@ def include_threat_in_crop(crop_x: float, player_sx: float, threat_sx: float | N
         crop_x = threat_sx - config.THREAT_FRAME_MARGIN_PX
     elif threat_x_in_crop > config.CROP_W - config.THREAT_FRAME_MARGIN_PX:
         crop_x = threat_sx - (config.CROP_W - config.THREAT_FRAME_MARGIN_PX)
-    return enforce_player_framing(crop_x, player_sx)
+    if _player_composition() == "thirds" and _threat_side(player_sx, threat_sx) != 0:
+        preferred = enforce_thirds_preference(crop_x, player_sx, threat_sx)
+        threat_x_in_preferred_crop = threat_sx - preferred
+        if config.THREAT_FRAME_MARGIN_PX <= threat_x_in_preferred_crop <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX:
+            return preferred
+        return enforce_safe_zone(crop_x, player_sx)
+    return enforce_player_framing(crop_x, player_sx, threat_sx)
 
 
 def avoid_minimap_ui(crop_x: float, player_sx: float, frame_w: int = 1920) -> float:
@@ -185,8 +234,10 @@ def smooth_crop_values(
     return x
 
 
-def enforce_player_framing(crop_x: float, player_sx: float) -> float:
+def enforce_player_framing(crop_x: float, player_sx: float, threat_sx: float | None = None) -> float:
     crop_x = enforce_safe_zone(crop_x, player_sx)
+    if _player_composition() == "thirds":
+        return enforce_thirds_preference(crop_x, player_sx, threat_sx)
     return enforce_center_preference(crop_x, player_sx)
 
 
@@ -241,7 +292,12 @@ class AdaptiveCropper:
             )
             blend_threat_sx = threat_sx if threat_sx is not None else player_sx
             target = blend_target(fight_type, player_sx, blend_threat_sx, player_sx)
-            crop_x = enforce_player_framing(target - config.CROP_W / 2, player_sx)
+            crop_x = (
+                rule_of_thirds_crop_x(player_sx, threat_sx)
+                if _player_composition() == "thirds"
+                else target - config.CROP_W / 2
+            )
+            crop_x = enforce_player_framing(crop_x, player_sx, threat_sx)
             crop_x = include_threat_in_crop(crop_x, player_sx, threat_sx)
             crop_x = avoid_minimap_ui(crop_x, player_sx, frame_w)
             raw_x.append(float(np.clip(crop_x, 0, frame_w - config.CROP_W)))
@@ -274,10 +330,12 @@ class AdaptiveCropper:
         # Hybrid mode uses only persistent red champion threats to choose a
         # side, measured relative to the locked center anchor.
         sides: list[int] = []
+        threat_targets: list[float | None] = []
         for timestamp in key_times:
             threat_sx = windowed_median(
                 threat_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
             )
+            threat_targets.append(threat_sx)
             if threat_sx is None:
                 sides.append(0)
             else:
@@ -312,7 +370,7 @@ class AdaptiveCropper:
         last_change_time = -1e9
         current_side = 0
         targets: list[float] = []
-        for key_time, side in zip(key_times, desired):
+        for key_time, side, threat_sx in zip(key_times, desired, threat_targets):
             t = float(key_time)
             if side != current_side:
                 can_cut = (
@@ -323,7 +381,14 @@ class AdaptiveCropper:
                     current_side = side
                     changes_used += 1
                     last_change_time = t
-            targets.append(base_x + current_side * config.HYBRID_OFFSET_PX)
+            hybrid_offset = 0.0 if _player_composition() == "center" else float(config.HYBRID_OFFSET_PX)
+            target = base_x + current_side * hybrid_offset
+            if current_side != 0 and threat_sx is not None:
+                # After committing to a fight side, use the actual red-bar
+                # position to claim extra enemy look-room when it still keeps
+                # the locked player inside the safe zone.
+                target = include_threat_in_crop(target, locked_player_sx, threat_sx)
+            targets.append(target)
 
         if config.CROP_TRANSITION == "cut":
             # Hold each position and snap to the next one, like a camera cut.

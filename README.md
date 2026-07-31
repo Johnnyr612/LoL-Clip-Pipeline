@@ -236,6 +236,17 @@ Runtime files are written outside the repo:
 - Database, uploads, temp files, and logs: `%APPDATA%\LoLClipApp`
 - Encoded clips and minimap detection debug images: `%USERPROFILE%\Videos\LoLClipApp`
 
+## Crop Composition
+
+The vertical crop stays at 3:4 (`810x1080` from a 1920x1080 source, then scaled to `1080x1440`). By default, hybrid crop mode uses rule-of-thirds composition once a visible enemy threat stays on one side of the player long enough: threats on the right place the player near the left third, and threats on the left place the player near the right third. When no reliable threat side is visible, the crop remains centered.
+
+Useful `.env` controls:
+
+- `LOL_CLIP_CROP_MODE=hybrid` keeps a steady locked-camera crop and cuts toward persistent fight sides.
+- `LOL_CLIP_PLAYER_COMPOSITION=thirds` enables look-room framing. Set `center` to keep the player centered.
+- `LOL_CLIP_THIRDS_LOOK_ROOM_PX=20` moves the player 20px farther from the fight-side third, giving the crop more room toward visible enemies.
+- `LOL_CLIP_HYBRID_OFFSET_PX=` defaults to the center-to-third distance plus look-room (`155` px with the default settings). Set a number to override it.
+
 ## Output Encoding Quality
 
 The pipeline crops the source into a vertical frame and re-encodes it, so the output bitrate controls how much of the original Medal quality is preserved. A simple Medal trim can often copy the original stream without re-encoding, but any crop or scale step needs a new encode. The default encoder uses high-quality H.264 settings:
@@ -246,7 +257,13 @@ The pipeline crops the source into a vertical frame and re-encodes it, so the ou
 - `LOL_CLIP_FFMPEG_PRESET=slow`
 - `LOL_CLIP_AUDIO_BITRATE=320k`
 
-When source matching is enabled, the backend probes the input MP4 with ffprobe and uses its detected frame rate and video bitrate for the output encode when those values are available. The completed job also stores those input/output media labels in the debug payload shown by the dashboard.
+When source matching is enabled, the backend probes the input MP4 with ffprobe and uses its detected frame rate for the output encode when available. Because the vertical crop and scale filters modify every video frame, the video stream cannot be copied bit-for-bit like a simple trim; it must be re-encoded. To reduce generation loss, source matching gives the output bitrate headroom above the detected source bitrate:
+
+```text
+LOL_CLIP_SOURCE_BITRATE_MULTIPLIER=1.15
+```
+
+For example, a `24.9M` source encodes around `28.6M` by default. If the input audio is already AAC, the backend copies the audio stream instead of re-encoding it. The completed job stores the input/output media labels in the debug payload shown by the dashboard.
 
 For larger files that stay closer to Medal's QHD 60 FPS H.264 settings, set fallback output settings in `.env`. If FFmpeg lists `h264_nvenc`, the NVIDIA encoder path is closest to Medal's GPU/H.264 recording setup:
 
@@ -255,6 +272,7 @@ LOL_CLIP_MATCH_SOURCE_ENCODING=1
 LOL_CLIP_VIDEO_ENCODER=h264_nvenc
 LOL_CLIP_NVENC_PRESET=p5
 LOL_CLIP_NVENC_RC=vbr
+LOL_CLIP_SOURCE_BITRATE_MULTIPLIER=1.15
 LOL_CLIP_VIDEO_BITRATE=25M
 LOL_CLIP_VIDEO_MAXRATE=25M
 LOL_CLIP_VIDEO_BUFSIZE=50M

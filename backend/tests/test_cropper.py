@@ -13,6 +13,8 @@ from backend.cropper import (
     enforce_center_preference,
     enforce_safe_zone,
     include_threat_in_crop,
+    player_anchor_x,
+    rule_of_thirds_crop_x,
     smooth_crop_values,
 )
 from backend.minimap_detector import ChampionResult
@@ -42,6 +44,21 @@ def test_center_preference_keeps_player_near_middle():
     crop_x = enforce_center_preference(0, 700)
     player_offset = abs(700 - (crop_x + config.CROP_W / 2))
     assert player_offset <= config.PLAYER_CENTER_DEADZONE_PX
+
+
+def test_rule_of_thirds_places_player_opposite_clear_threat_side():
+    right_threat_anchor = config.CROP_W / 3 - config.PLAYER_THIRDS_LOOK_ROOM_PX
+    left_threat_anchor = config.CROP_W * 2 / 3 + config.PLAYER_THIRDS_LOOK_ROOM_PX
+
+    assert player_anchor_x(960, 1250) == right_threat_anchor
+    assert rule_of_thirds_crop_x(960, 1250) == 960 - right_threat_anchor
+    assert player_anchor_x(960, 650) == left_threat_anchor
+    assert rule_of_thirds_crop_x(960, 650) == 960 - left_threat_anchor
+
+
+def test_rule_of_thirds_falls_back_to_center_without_clear_threat():
+    assert player_anchor_x(960, None) == config.CROP_W / 2
+    assert player_anchor_x(960, 1040) == config.CROP_W / 2
 
 
 def test_clamp_frame_boundary():
@@ -198,7 +215,37 @@ def test_hybrid_crop_uses_threat_side_relative_to_locked_center():
     assert any(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes)
     assert all(keyframe.crop_x >= config.STATIC_CROP_X for keyframe in keyframes)
 
-def test_threat_inclusion_keeps_green_health_player_center_priority():
+
+def test_hybrid_crop_extends_farther_to_keep_visible_enemy_in_frame():
+    frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(8, dtype=np.float32)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        7.0,
+        [(0.5, 0.5)] * 8,
+        [],
+        "1v1",
+        [960.0] * 8,
+        [1500.0] * 8,
+    )
+
+    fixed_thirds_crop = config.STATIC_CROP_X + config.HYBRID_OFFSET_PX
+    assert any(keyframe.crop_x > fixed_thirds_crop for keyframe in keyframes)
+    assert all(config.PLAYER_SAFE_LEFT_PX <= 960 - keyframe.crop_x <= config.PLAYER_SAFE_RIGHT_PX for keyframe in keyframes)
+
+
+def test_threat_inclusion_keeps_green_health_player_near_thirds_anchor():
+    crop_x = include_threat_in_crop(960 - config.CROP_W / 2, 960, 1390)
+
+    assert 0 <= 1390 - crop_x <= config.CROP_W
+    assert abs((960 - crop_x) - player_anchor_x(960, 1390)) <= config.PLAYER_THIRDS_DEADZONE_PX
+
+
+def test_center_composition_keeps_green_health_player_center_priority(monkeypatch):
+    monkeypatch.setattr(config, "PLAYER_COMPOSITION", "center")
+
     crop_x = include_threat_in_crop(960 - config.CROP_W / 2, 960, 1390)
 
     assert 0 <= 1390 - crop_x <= config.CROP_W

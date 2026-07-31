@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend import config
-from backend.encoder import VideoEncoder, _step_crop_expression, _video_encode_args
+from backend.encoder import VideoEncoder, _audio_encode_args, _selected_output_fps, _step_crop_expression, _video_encode_args
 from backend.media_probe import MediaProfile
 
 
@@ -48,6 +48,25 @@ def test_encoder_uses_seekable_mp4_options(monkeypatch, tmp_path):
     assert "-pix_fmt" in captured["args"]
     assert "yuv420p" in captured["args"]
     assert config.FFMPEG_AUDIO_BITRATE in captured["args"]
+
+
+def test_encoder_preserves_source_fps_but_uses_integer_gop(monkeypatch, tmp_path):
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr("backend.encoder.shutil.which", lambda _name: "ffmpeg")
+    monkeypatch.setattr(config, "TEMP_DIR", tmp_path / "temp")
+    monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path / "outputs")
+
+    def fake_run(args: list[str]) -> None:
+        captured["args"] = args
+
+    monkeypatch.setattr("backend.encoder._run_ffmpeg", fake_run)
+    monkeypatch.setattr(config, "FFMPEG_MATCH_SOURCE_ENCODING", True)
+    source_profile = MediaProfile(duration=36.0, has_audio=True, video_codec="h264", audio_codec="aac", fps=59.75)
+
+    VideoEncoder().encode("job", Path("source.mp4"), 0.0, 2.0, [(100, 0, 810, 1080)], [0.0], source_profile)
+
+    assert captured["args"][captured["args"].index("-r") + 1] == "59.75"
+    assert captured["args"][captured["args"].index("-g") + 1] == "60"
 
 
 def test_video_encode_args_use_crf_by_default(monkeypatch):
@@ -115,9 +134,50 @@ def test_video_encode_args_can_match_source_bitrate(monkeypatch):
     monkeypatch.setattr(config, "FFMPEG_VIDEO_BITRATE", "20M")
     monkeypatch.setattr(config, "FFMPEG_VIDEO_MAXRATE", "")
     monkeypatch.setattr(config, "FFMPEG_VIDEO_BUFSIZE", "")
+    monkeypatch.setattr(config, "FFMPEG_SOURCE_BITRATE_MULTIPLIER", 1.15)
 
     args = _video_encode_args(source_profile)
 
-    assert args[args.index("-b:v") + 1] == "24.9M"
-    assert args[args.index("-maxrate") + 1] == "24.9M"
-    assert args[args.index("-bufsize") + 1] == "24.9M"
+    assert args[args.index("-b:v") + 1] == "28.6M"
+    assert args[args.index("-maxrate") + 1] == "28.6M"
+    assert args[args.index("-bufsize") + 1] == "28.6M"
+
+
+def test_source_matched_bitrate_is_not_capped_by_lower_maxrate(monkeypatch):
+    source_profile = MediaProfile(duration=36.0, has_audio=True, video_codec="h264", video_bitrate=24_910_000)
+    monkeypatch.setattr(config, "FFMPEG_MATCH_SOURCE_ENCODING", True)
+    monkeypatch.setattr(config, "FFMPEG_VIDEO_ENCODER", "h264_nvenc")
+    monkeypatch.setattr(config, "FFMPEG_NVENC_PRESET", "p5")
+    monkeypatch.setattr(config, "FFMPEG_NVENC_RC", "vbr")
+    monkeypatch.setattr(config, "FFMPEG_NVENC_CQ", "")
+    monkeypatch.setattr(config, "FFMPEG_VIDEO_BITRATE", "20M")
+    monkeypatch.setattr(config, "FFMPEG_VIDEO_MAXRATE", "25M")
+    monkeypatch.setattr(config, "FFMPEG_VIDEO_BUFSIZE", "50M")
+    monkeypatch.setattr(config, "FFMPEG_SOURCE_BITRATE_MULTIPLIER", 1.15)
+
+    args = _video_encode_args(source_profile)
+
+    assert args[args.index("-b:v") + 1] == "28.6M"
+    assert args[args.index("-maxrate") + 1] == "28.6M"
+    assert args[args.index("-bufsize") + 1] == "50M"
+
+
+def test_selected_output_fps_preserves_source_fps(monkeypatch):
+    monkeypatch.setattr(config, "FFMPEG_MATCH_SOURCE_ENCODING", True)
+    source_profile = MediaProfile(duration=36.0, has_audio=True, fps=59.75)
+
+    assert _selected_output_fps(source_profile) == "59.75"
+
+
+def test_audio_encode_args_copy_aac_when_matching_source(monkeypatch):
+    monkeypatch.setattr(config, "FFMPEG_MATCH_SOURCE_ENCODING", True)
+    source_profile = MediaProfile(duration=36.0, has_audio=True, audio_codec="aac")
+
+    assert _audio_encode_args(source_profile) == ["-c:a", "copy"]
+
+
+def test_audio_encode_args_encode_non_aac(monkeypatch):
+    monkeypatch.setattr(config, "FFMPEG_MATCH_SOURCE_ENCODING", True)
+    source_profile = MediaProfile(duration=36.0, has_audio=True, audio_codec="opus")
+
+    assert _audio_encode_args(source_profile) == ["-c:a", "aac", "-b:a", config.FFMPEG_AUDIO_BITRATE]

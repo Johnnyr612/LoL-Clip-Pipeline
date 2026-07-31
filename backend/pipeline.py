@@ -13,6 +13,7 @@ from .encoder import EncoderError, VideoEncoder, describe_encode_settings
 from .fight_detector import (
     FightDetector,
     TrimSettings,
+    apply_highlight_trim_settings,
     estimate_combat_screen_x_positions,
     estimate_visible_enemy_count,
 )
@@ -183,12 +184,19 @@ class ClipPipeline:
                 validation.duration,
                 highlight_checkpoint_path,
             )
+            trim = apply_highlight_trim_settings(
+                trim,
+                bundle.full_frames,
+                bundle.timestamps_full,
+                validation.duration,
+                trim_settings,
+            )
             await update_job_progress(
                 db_path,
                 job_id,
                 "stage3_fight",
                 50,
-                f"Highlight editor selected: {trim.clip_start:.1f}s to {trim.clip_end:.1f}s",
+                f"Highlight editor selected final trim: {trim.clip_start:.1f}s to {trim.clip_end:.1f}s",
             )
             player_champion, player_champion_score = _detect_player_champion(
                 self.minimap_detector,

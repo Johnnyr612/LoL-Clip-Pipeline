@@ -13,6 +13,7 @@ from backend.fight_detector import (
     TrimResult,
     TrimSettings,
     add_output_context,
+    apply_highlight_trim_settings,
     apply_dialog_extension,
     boundaries_from_scores,
     estimate_visible_enemy_count,
@@ -179,6 +180,49 @@ def test_custom_trim_settings_can_tighten_pre_fight_lead():
     assert result.clip_start == 11.0
     assert result.clip_end == 39.5
     assert "pre_fight_lead_capped" in result.flags
+
+
+def test_highlight_trim_settings_make_tight_and_balanced_distinct():
+    frames = np.zeros((60, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(60, dtype=np.float32)
+    trim = TrimResult(clip_start=10, clip_end=38, fight_start=12, fight_end=36, fight_duration=24, dialog_segments=[], flags=["highlight_editor_model"])
+
+    tight = apply_highlight_trim_settings(
+        trim,
+        frames,
+        timestamps,
+        60,
+        TrimSettings(
+            fight_start_preroll_sec=0.8,
+            output_context_padding_sec=0.5,
+            combat_event_end_padding_sec=2.0,
+            max_pre_fight_lead_sec=1.2,
+            min_clip_duration_sec=14.0,
+        ),
+    )
+    balanced = apply_highlight_trim_settings(trim, frames, timestamps, 60, TrimSettings())
+
+    assert tight.clip_start == 10.8
+    assert tight.clip_end == 38.5
+    assert balanced.clip_start == 9.5
+    assert balanced.clip_end == 39.5
+
+
+def test_highlight_trim_settings_can_add_missing_incoming_rewind():
+    frames = np.zeros((60, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(60, dtype=np.float32)
+    trim = TrimResult(clip_start=12, clip_end=30, fight_start=12, fight_end=28, fight_duration=16, dialog_segments=[], flags=["highlight_editor_model"])
+
+    result = apply_highlight_trim_settings(
+        trim,
+        frames,
+        timestamps,
+        60,
+        TrimSettings(fight_start_preroll_sec=2.0, output_context_padding_sec=0.0, max_pre_fight_lead_sec=2.0),
+    )
+
+    assert result.clip_start == 10.0
+    assert "highlight_preroll_applied" in result.flags
 
 
 def test_estimate_visible_enemy_count():
