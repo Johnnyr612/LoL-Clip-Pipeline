@@ -61,24 +61,20 @@ export function SettingsPanel({ inputFolders, setInputFolders }: Props) {
   }
 
   return (
-    <section className="grid gap-5">
+    <section className="grid gap-4">
       <div className="surface-panel p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="section-kicker">Local folders</p>
             <h2 className="section-title mt-1">Settings</h2>
-            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-              Open folders used for source clips, rendered outputs, checkpoints, logs, and temp files.
-            </p>
           </div>
           <button className="button min-h-8 py-1.5" onClick={() => void refreshFolders()} type="button">
             Refresh
           </button>
         </div>
 
-        {message ? <p className="mt-4 rounded-md border border-lane bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">{message}</p> : null}
+        {message ? <p className="mt-3 rounded-md border border-lane bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">{message}</p> : null}
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <div className="mt-3 grid gap-2">
           {folders.map((folder) => (
             <FolderCard
               exists={folder.exists}
@@ -93,11 +89,8 @@ export function SettingsPanel({ inputFolders, setInputFolders }: Props) {
       </div>
 
       <div className="surface-panel p-4">
-        <div>
-          <p className="section-kicker">Input folders</p>
-          <h2 className="section-title mt-1">Source Clip Locations</h2>
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+        <h2 className="section-title mt-1">Source Clip Locations</h2>
+        <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
           <input
             className="input-field"
             onChange={(event) => setNewInputFolder(event.target.value)}
@@ -114,11 +107,8 @@ export function SettingsPanel({ inputFolders, setInputFolders }: Props) {
             Add Folder
           </button>
         </div>
-        <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
-          Browser security does not expose arbitrary folder paths from a picker, so save the local path here and open it from the app.
-        </p>
 
-        <div className="mt-4 grid gap-3">
+        <div className="mt-3 grid gap-2">
           {inputFolders.length ? (
             inputFolders.map((path) => (
               <FolderCard
@@ -132,7 +122,7 @@ export function SettingsPanel({ inputFolders, setInputFolders }: Props) {
               />
             ))
           ) : (
-            <p className="rounded-md border border-dashed border-lane p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+            <p className="rounded-md border border-dashed border-lane p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
               No input folders saved yet.
             </p>
           )}
@@ -158,17 +148,17 @@ function FolderCard({
   path: string;
 }) {
   return (
-    <article className="surface-muted grid gap-3 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+    <article className="surface-muted grid gap-2 p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold">{label}</h3>
-          <p className="mt-1 break-all text-xs leading-5 text-slate-500 dark:text-slate-400">{path}</p>
+          <span className={exists ? "chip chip-success min-h-6 shrink-0 px-2 py-0.5" : "chip chip-warning min-h-6 shrink-0 px-2 py-0.5"}>{exists ? kind : "missing"}</span>
         </div>
-        <span className={exists ? "chip chip-success shrink-0" : "chip chip-warning shrink-0"}>{exists ? kind : "missing"}</span>
+        <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400" title={path}>{path}</p>
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex gap-2">
         <button className="button-primary min-h-8 py-1.5" disabled={!exists} onClick={onOpen} type="button">
-          Open Folder
+          Open
         </button>
         {onRemove ? (
           <button className="button-danger min-h-8 py-1.5" onClick={onRemove} type="button">

@@ -36,7 +36,7 @@ function App() {
           <div className="min-w-0">
             <p className="section-kicker">Local creator tool</p>
             <h1 className="text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">LoL Clip Pipeline</h1>
-            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Fight detection, adaptive vertical crop, review, and publishing.</p>
+            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Fight detection, dynamic vertical crop, review, and publishing.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button

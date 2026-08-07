@@ -32,6 +32,7 @@ class TrimSettings:
     target_clip_duration_sec: float = config.COMBAT_EVENT_TARGET_CLIP_DURATION_SEC
     max_clip_duration_sec: float = config.MAX_CLIP_DURATION
     conservative_full_fight_trim: bool = config.CONSERVATIVE_FULL_FIGHT_TRIM
+    model_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -278,6 +279,16 @@ def apply_highlight_trim_settings(
     trim_settings: TrimSettings | None = None,
 ) -> TrimResult:
     settings = trim_settings or TrimSettings()
+    if settings.model_only:
+        return TrimResult(
+            clip_start=trim.clip_start,
+            clip_end=trim.clip_end,
+            fight_start=trim.fight_start,
+            fight_end=trim.fight_end,
+            fight_duration=trim.fight_duration,
+            dialog_segments=trim.dialog_segments,
+            flags=[*trim.flags, "model_only_trim"],
+        )
     desired_start = max(0.0, trim.fight_start - settings.fight_start_preroll_sec)
     clip_start = min(trim.clip_start, desired_start)
     flags = list(trim.flags)
@@ -327,12 +338,23 @@ def _champion_bars(bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int
     return [bar for bar in bars if bar[2] >= config.COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH]
 
 
+def _camera_threat_bars(bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """Stricter crop-steering filter so camera motion only trusts thick red bars."""
+    return [
+        bar
+        for bar in bars
+        if bar[2] >= config.COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_WIDTH
+        and bar[3] >= config.COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_HEIGHT
+        and bar[2] * bar[3] >= config.COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_AREA
+    ]
+
+
 def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[float | None], list[float | None]]:
     player_positions: list[float | None] = []
     threat_positions: list[float | None] = []
     for frame in full_frames:
         red_bars, green_bars = _combat_health_bars(frame)
-        red_bars = _champion_bars(red_bars)
+        red_bars = _camera_threat_bars(red_bars)
         player_bar = _select_player_health_bar(green_bars)
         if player_bar is None:
             # Without a confirmed player bar there is no reliable anchor, so
@@ -344,7 +366,30 @@ def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[fl
         x, _, width, _ = player_bar
         player_positions.append(float(x + (width - 1) / 2))
         threat_positions.append(_nearest_bar_center_x(_enemy_bars_near_player(red_bars, player_bar), player_bar))
-    return player_positions, threat_positions
+    return player_positions, _stabilize_sparse_threat_positions(threat_positions)
+
+
+def _stabilize_sparse_threat_positions(values: list[float | None]) -> list[float | None]:
+    if not values:
+        return []
+    stabilized: list[float | None] = []
+    radius = max(1, config.COMBAT_CAMERA_THREAT_SUPPORT_RADIUS_FRAMES)
+    required = max(2, config.COMBAT_CAMERA_THREAT_MIN_SUPPORT_SAMPLES)
+    for index, value in enumerate(values):
+        if value is None:
+            stabilized.append(None)
+            continue
+        support = 1
+        for neighbor_index in range(max(0, index - radius), min(len(values), index + radius + 1)):
+            if neighbor_index == index:
+                continue
+            neighbor = values[neighbor_index]
+            if neighbor is None:
+                continue
+            if abs(float(neighbor) - float(value)) <= config.COMBAT_CAMERA_THREAT_SUPPORT_TOLERANCE_PX:
+                support += 1
+        stabilized.append(float(value) if support >= required else None)
+    return stabilized
 
 
 def _nearest_bar_center_x(

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
@@ -32,6 +32,7 @@ from .label_review import (
     validated_video_path,
 )
 from .pipeline import ClipPipeline
+from .cropper import CropSettings
 from .fight_detector import TrimSettings
 from .tiktok import TikTokError, TikTokPostOptions
 from . import tiktok
@@ -89,6 +90,7 @@ class TrimSettingsRequest(BaseModel):
     combat_event_end_padding_sec: float = config.COMBAT_EVENT_END_PADDING_SEC
     max_pre_fight_lead_sec: float = config.MAX_PRE_FIGHT_LEAD_SEC
     min_clip_duration_sec: float = config.COMBAT_EVENT_MIN_CLIP_DURATION_SEC
+    model_only: bool = False
 
     def to_trim_settings(self) -> TrimSettings:
         return TrimSettings(
@@ -97,7 +99,22 @@ class TrimSettingsRequest(BaseModel):
             combat_event_end_padding_sec=_clamp_float(self.combat_event_end_padding_sec, 0.0, 8.0),
             max_pre_fight_lead_sec=_clamp_float(self.max_pre_fight_lead_sec, 0.0, 8.0),
             min_clip_duration_sec=_clamp_float(self.min_clip_duration_sec, 5.0, 45.0),
+            model_only=bool(self.model_only),
         )
+
+
+class CropSettingsRequest(BaseModel):
+    mode: str = config.CROP_MODE
+    transition: str = config.CROP_TRANSITION
+
+    def to_crop_settings(self) -> CropSettings:
+        mode = str(self.mode or config.CROP_MODE).strip().lower()
+        transition = str(self.transition or config.CROP_TRANSITION).strip().lower()
+        if mode not in {"static", "dynamic"}:
+            mode = "dynamic"
+        if transition not in {"cut", "pan"}:
+            transition = config.CROP_TRANSITION
+        return CropSettings(mode=mode, transition=transition)
 
 
 class OpenFolderRequest(BaseModel):
@@ -355,7 +372,11 @@ async def tiktok_publish_status(publish_id: str) -> dict:
 
 
 @app.post("/jobs")
-async def create_job(file: UploadFile = File(...)) -> dict:
+async def create_job(
+    file: UploadFile = File(...),
+    mode: str = Form(config.CROP_MODE),
+    transition: str = Form(config.CROP_TRANSITION),
+) -> dict:
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline not ready")
     if not file.filename or not file.filename.lower().endswith(".mp4"):
@@ -368,11 +389,12 @@ async def create_job(file: UploadFile = File(...)) -> dict:
         while chunk := await file.read(1024 * 1024):
             handle.write(chunk)
     await models.create_job(config.DB_PATH, job_id, str(source_path))
+    crop_settings = CropSettingsRequest(mode=mode, transition=transition).to_crop_settings()
 
     async def run_background() -> None:
         async with job_semaphore:
             await asyncio.to_thread(
-                lambda: asyncio.run(pipeline.run(source_path, job_id))
+                lambda: asyncio.run(pipeline.run(source_path, job_id, crop_settings=crop_settings))
             )
 
     asyncio.create_task(run_background())
@@ -449,6 +471,7 @@ async def process_existing(payload: dict) -> dict:
         )
     source_path = _normalize_source_path(payload.get("source_path", ""))
     trim_settings = TrimSettingsRequest(**(payload.get("trim_settings") or {})).to_trim_settings()
+    crop_settings = CropSettingsRequest(**(payload.get("crop_settings") or {})).to_crop_settings()
     highlight_checkpoint_path = _resolve_highlight_checkpoint(payload.get("highlight_checkpoint", ""))
 
     # Validate input before starting background task
@@ -472,7 +495,7 @@ async def process_existing(payload: dict) -> dict:
     async def run_background() -> None:
         async with job_semaphore:
             await asyncio.to_thread(
-                lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings, highlight_checkpoint_path))
+                lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings, highlight_checkpoint_path, crop_settings))
             )
 
     asyncio.create_task(run_background())

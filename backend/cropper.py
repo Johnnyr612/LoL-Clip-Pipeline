@@ -6,7 +6,6 @@ from typing import Sequence
 import numpy as np
 
 from . import config
-from .minimap_detector import ChampionResult, map_pos_to_screen_hint
 
 
 @dataclass(frozen=True)
@@ -16,6 +15,12 @@ class CropKeyframe:
     crop_y: int = config.CROP_Y
     crop_w: int = config.CROP_W
     crop_h: int = config.CROP_H
+
+
+@dataclass(frozen=True)
+class CropSettings:
+    mode: str = config.CROP_MODE
+    transition: str = config.CROP_TRANSITION
 
 
 def blend_target(fight_type: str, player_sx: float, threat_sx: float, flow_sx: float) -> float:
@@ -52,13 +57,23 @@ def _player_composition() -> str:
     return composition if composition in {"center", "thirds"} else "thirds"
 
 
+def _crop_mode(value: str | None = None) -> str:
+    mode = (value or config.CROP_MODE).strip().lower()
+    return mode if mode in {"static", "dynamic"} else "dynamic"
+
+
+def _crop_transition(value: str | None = None) -> str:
+    transition = (value or config.CROP_TRANSITION).strip().lower()
+    return transition if transition in {"cut", "pan"} else "cut"
+
+
 def _threat_side(player_sx: float, threat_sx: float | None) -> int:
     if threat_sx is None:
         return 0
     delta = threat_sx - player_sx
-    if delta <= -config.HYBRID_SIDE_TRIGGER_PX:
+    if delta <= -config.DYNAMIC_THREAT_SIDE_TRIGGER_PX:
         return -1
-    if delta >= config.HYBRID_SIDE_TRIGGER_PX:
+    if delta >= config.DYNAMIC_THREAT_SIDE_TRIGGER_PX:
         return 1
     return 0
 
@@ -107,13 +122,112 @@ def include_threat_in_crop(crop_x: float, player_sx: float, threat_sx: float | N
     return enforce_player_framing(crop_x, player_sx, threat_sx)
 
 
-def avoid_minimap_ui(crop_x: float, player_sx: float, frame_w: int = 1920) -> float:
+def combat_focus_crop_x(
+    player_sx: float,
+    threat_sx: float | None,
+    frame_w: int = 1920,
+    preferred_crop_x: float | None = None,
+) -> float:
+    """Prefer the player centered, then shift only enough to keep the threat
+    visible. If both cannot fit, keep the player in the safe zone."""
+    frame_low = 0.0
+    frame_high = max(0.0, float(frame_w - config.CROP_W))
+    player_low = max(frame_low, float(player_sx) - config.PLAYER_SAFE_RIGHT_PX)
+    player_high = min(frame_high, float(player_sx) - config.PLAYER_SAFE_LEFT_PX)
+    if player_low > player_high:
+        player_low, player_high = frame_low, frame_high
+
+    preferred = float(player_sx) - config.CROP_W / 2 if preferred_crop_x is None else float(preferred_crop_x)
+    preferred = float(np.clip(preferred, player_low, player_high))
+    if threat_sx is None:
+        return preferred
+
+    threat_low = float(threat_sx) - (config.CROP_W - config.THREAT_FRAME_MARGIN_PX)
+    threat_high = float(threat_sx) - config.THREAT_FRAME_MARGIN_PX
+    both_low = max(player_low, threat_low, frame_low)
+    both_high = min(player_high, threat_high, frame_high)
+    if both_low <= both_high:
+        return float(np.clip(preferred, both_low, both_high))
+
+    # The player and threat are too far apart for an 810px crop. Move toward
+    # the threat as far as the player's safe zone allows.
+    if float(threat_sx) < float(player_sx):
+        return player_low
+    return player_high
+
+
+def _player_safe_crop_range(player_sx: float, frame_w: int = 1920) -> tuple[float, float]:
+    frame_low = 0.0
+    frame_high = max(0.0, float(frame_w - config.CROP_W))
+    player_low = max(frame_low, float(player_sx) - config.PLAYER_SAFE_RIGHT_PX)
+    player_high = min(frame_high, float(player_sx) - config.PLAYER_SAFE_LEFT_PX)
+    if player_low > player_high:
+        return frame_low, frame_high
+    return player_low, player_high
+
+
+def _visible_threat_crop_range(
+    player_sx: float,
+    threat_sx: float | None,
+    frame_w: int = 1920,
+) -> tuple[float, float] | None:
+    if threat_sx is None:
+        return None
+    player_low, player_high = _player_safe_crop_range(player_sx, frame_w)
+    frame_low = 0.0
+    frame_high = max(0.0, float(frame_w - config.CROP_W))
+    threat_low = float(threat_sx) - (config.CROP_W - config.THREAT_FRAME_MARGIN_PX)
+    threat_high = float(threat_sx) - config.THREAT_FRAME_MARGIN_PX
+    low = max(player_low, threat_low, frame_low)
+    high = min(player_high, threat_high, frame_high)
+    if low > high:
+        return None
+    return low, high
+
+
+def dynamic_rule_of_thirds_crop_x(
+    player_sx: float,
+    threat_sx: float | None,
+    frame_w: int = 1920,
+    preferred_crop_x: float | None = None,
+) -> float:
+    """Dynamic mode contract: stay centered unless a threat can fit, then use
+    the player-on-thirds composition while keeping the enemy visible."""
+    center = float(clamp_crop_x(float(config.STATIC_CROP_X), frame_w))
+    fit_range = _visible_threat_crop_range(player_sx, threat_sx, frame_w)
+    if fit_range is None:
+        if preferred_crop_x is not None and threat_sx is not None and _threat_is_visible(float(preferred_crop_x), threat_sx):
+            player_x_in_preferred_crop = float(player_sx) - float(preferred_crop_x)
+            if config.PLAYER_SAFE_LEFT_PX <= player_x_in_preferred_crop <= config.PLAYER_SAFE_RIGHT_PX:
+                return float(preferred_crop_x)
+        return center
+    low, high = fit_range
+    thirds_target = rule_of_thirds_crop_x(player_sx, threat_sx)
+    preferred = thirds_target if preferred_crop_x is None else float(preferred_crop_x)
+    return float(np.clip(preferred, low, high))
+
+
+def _threat_is_visible(crop_x: float, threat_sx: float | None) -> bool:
+    if threat_sx is None:
+        return True
+    threat_x_in_crop = float(threat_sx) - float(crop_x)
+    return config.THREAT_FRAME_MARGIN_PX <= threat_x_in_crop <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
+
+
+def avoid_minimap_ui(
+    crop_x: float,
+    player_sx: float,
+    frame_w: int = 1920,
+    threat_sx: float | None = None,
+) -> float:
     minimap_left = frame_w * config.MINIMAP_CROP_X_PCT
     max_without_minimap = minimap_left - config.CROP_W - config.MINIMAP_UI_AVOID_MARGIN_PX
     if crop_x <= max_without_minimap:
         return crop_x
 
     capped = max(0.0, max_without_minimap)
+    if threat_sx is not None and _threat_is_visible(crop_x, threat_sx) and not _threat_is_visible(capped, threat_sx):
+        return crop_x
     player_x_in_capped_crop = player_sx - capped
     if config.PLAYER_SAFE_LEFT_PX <= player_x_in_capped_crop <= config.PLAYER_SAFE_RIGHT_PX:
         return capped
@@ -122,25 +236,6 @@ def avoid_minimap_ui(crop_x: float, player_sx: float, frame_w: int = 1920) -> fl
 
 def clamp_crop_x(crop_x: float, frame_w: int = 1920) -> int:
     return int(np.clip(round(crop_x), 0, frame_w - config.CROP_W))
-
-
-def compute_threat_sx(
-    player_map_pos: tuple[float, float],
-    enemies: Sequence[ChampionResult],
-    frame_size: tuple[int, int],
-) -> float:
-    if not enemies:
-        return map_pos_to_screen_hint(player_map_pos, frame_size)[0]
-    player = np.array(player_map_pos, dtype=np.float32)
-    weighted = 0.0
-    total = 0.0
-    for enemy in enemies:
-        enemy_pos = np.array(enemy.mean_pos, dtype=np.float32)
-        distance = max(float(np.linalg.norm(enemy_pos - player)), 1.0)
-        weight = enemy.confidence / distance
-        weighted += map_pos_to_screen_hint(tuple(enemy_pos), frame_size)[0] * weight
-        total += weight
-    return weighted / total if total else map_pos_to_screen_hint(player_map_pos, frame_size)[0]
 
 
 def stabilize_screen_positions(
@@ -198,7 +293,13 @@ def limit_pan_speed(values: Sequence[float], times: Sequence[float]) -> list[flo
     pan velocity so the view never snaps."""
     if not values:
         return []
-    seed_count = min(max(1, config.CROP_START_SEED_KEYFRAMES), len(values))
+    return _limit_pan_speed(values, times, config.CROP_START_SEED_KEYFRAMES)
+
+
+def _limit_pan_speed(values: Sequence[float], times: Sequence[float], seed_keyframes: int) -> list[float]:
+    if not values:
+        return []
+    seed_count = min(max(1, seed_keyframes), len(values))
     current = float(np.median(np.asarray(values[:seed_count], dtype=np.float32)))
     smoothed = [current]
     for idx in range(1, len(values)):
@@ -218,6 +319,7 @@ def smooth_crop_values(
     player_sx_values: Sequence[float],
     frame_w: int = 1920,
     threat_sx_values: Sequence[float | None] | None = None,
+    include_threat: bool = True,
 ) -> np.ndarray:
     """Final safety pass after pan smoothing. Uses only the loose safe zone
     (not the tight center deadzone) so it corrects real framing violations
@@ -226,10 +328,12 @@ def smooth_crop_values(
     if len(x) == 0:
         return x
     for idx, player_sx in enumerate(player_sx_values):
-        value = enforce_safe_zone(float(x[idx]), float(player_sx))
-        if threat_sx_values is not None:
-            value = include_threat_in_crop(value, float(player_sx), threat_sx_values[idx])
-        value = avoid_minimap_ui(value, float(player_sx), frame_w)
+        if include_threat and threat_sx_values is not None:
+            value = combat_focus_crop_x(float(player_sx), threat_sx_values[idx], frame_w, float(x[idx]))
+        else:
+            value = enforce_safe_zone(float(x[idx]), float(player_sx))
+        threat_sx = threat_sx_values[idx] if threat_sx_values is not None else None
+        value = avoid_minimap_ui(value, float(player_sx), frame_w, threat_sx)
         x[idx] = clamp_crop_x(value, frame_w)
     return x
 
@@ -249,13 +353,17 @@ class AdaptiveCropper:
         clip_start: float,
         clip_end: float,
         player_positions: Sequence[tuple[float, float] | None],
-        enemies: Sequence[ChampionResult],
+        enemies: Sequence[object],
         fight_type: str,
         player_screen_x_positions: Sequence[float | None] | None = None,
         threat_screen_x_positions: Sequence[float | None] | None = None,
+        crop_settings: CropSettings | None = None,
     ) -> list[CropKeyframe]:
         frame_h, frame_w = frames.shape[1:3]
-        if config.CROP_MODE == "static":
+        settings = crop_settings or CropSettings()
+        mode = _crop_mode(settings.mode)
+        transition = _crop_transition(settings.transition)
+        if mode == "static":
             # Locked in-game camera already keeps the champion framed, so a
             # single fixed crop produces the steadiest, most natural output.
             crop_x = clamp_crop_x(float(config.STATIC_CROP_X), frame_w)
@@ -263,160 +371,136 @@ class AdaptiveCropper:
 
         key_times = _trajectory_times(clip_start, clip_end)
 
-        if config.CROP_MODE == "hybrid":
-            return self._hybrid_keyframes(
+        if mode == "dynamic":
+            return self._dynamic_keyframes(
                 key_times,
                 timestamps,
                 stabilize_screen_positions(player_screen_x_positions),
                 stabilize_screen_positions(threat_screen_x_positions),
                 frame_w,
+                transition,
             )
 
-        player_series = stabilize_screen_positions(player_screen_x_positions)
-        threat_series = stabilize_screen_positions(threat_screen_x_positions)
-
-        raw_x: list[float] = []
-        player_sx_values: list[float] = []
-        threat_sx_values: list[float | None] = []
-        for timestamp in key_times:
-            player_sx = windowed_median(
-                player_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
-            )
-            if player_sx is None:
-                # The recorded view already follows the camera. Without a
-                # confirmed player health bar, stay centered instead of
-                # guessing from unrelated bars.
-                player_sx = frame_w / 2
-            threat_sx = windowed_median(
-                threat_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
-            )
-            blend_threat_sx = threat_sx if threat_sx is not None else player_sx
-            target = blend_target(fight_type, player_sx, blend_threat_sx, player_sx)
-            crop_x = (
-                rule_of_thirds_crop_x(player_sx, threat_sx)
-                if _player_composition() == "thirds"
-                else target - config.CROP_W / 2
-            )
-            crop_x = enforce_player_framing(crop_x, player_sx, threat_sx)
-            crop_x = include_threat_in_crop(crop_x, player_sx, threat_sx)
-            crop_x = avoid_minimap_ui(crop_x, player_sx, frame_w)
-            raw_x.append(float(np.clip(crop_x, 0, frame_w - config.CROP_W)))
-            player_sx_values.append(player_sx)
-            threat_sx_values.append(threat_sx)
-
-        panned = limit_pan_speed(raw_x, [float(t) for t in key_times])
-        smoothed = smooth_crop_values(panned, player_sx_values, frame_w, threat_sx_values)
-        return [CropKeyframe(float(t), int(x)) for t, x in zip(key_times, smoothed)]
-
-    def _hybrid_keyframes(
+    def _dynamic_keyframes(
         self,
         key_times: np.ndarray,
         timestamps: np.ndarray,
         player_series: list[float | None] | None,
         threat_series: list[float | None] | None,
         frame_w: int,
+        transition: str,
     ) -> list[CropKeyframe]:
-        """Camera style for locked-cam recordings: hold a steady centered shot,
-        and only reposition toward a flank when threats persist on that side.
-        The result reads as deliberate reframing, not continuous sliding."""
+        """Locked-camera dynamic crop: begin centered, shift to thirds only
+        after a visible enemy side persists, then return to center when it
+        cannot fit or disappears."""
         base_x = float(clamp_crop_x(float(config.STATIC_CROP_X), frame_w))
         locked_player_sx = base_x + config.CROP_W / 2
         interval = float(key_times[1] - key_times[0]) if len(key_times) > 1 else 1.0
-        hold_samples = max(1, int(round(config.HYBRID_HOLD_SEC / max(interval, 1e-3))))
+        hold_samples = max(1, int(round(config.DYNAMIC_THREAT_HOLD_SEC / max(interval, 1e-3))))
 
-        # Locked-camera clips keep the recorded champion near the crop center.
-        # Health-bar matching can occasionally select an allied/minion bar far
-        # from center; do not let that bad green-bar match yank the view.
-        # Hybrid mode uses only persistent red champion threats to choose a
-        # side, measured relative to the locked center anchor.
-        sides: list[int] = []
+        candidate_side = 0
+        side_streak = 0
+        committed_side = 0
+        view_changes = 0
+        raw_targets: list[float] = []
+        player_targets: list[float] = []
         threat_targets: list[float | None] = []
-        for timestamp in key_times:
+        for index, timestamp in enumerate(key_times):
+            player_sx = _trusted_player_sx(
+                windowed_median(player_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC),
+                locked_player_sx,
+            )
             threat_sx = windowed_median(
                 threat_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
             )
-            threat_targets.append(threat_sx)
-            if threat_sx is None:
-                sides.append(0)
-            else:
-                delta = threat_sx - locked_player_sx
-                if delta <= -config.HYBRID_SIDE_TRIGGER_PX:
-                    sides.append(-1)
-                elif delta >= config.HYBRID_SIDE_TRIGGER_PX:
-                    sides.append(1)
+            previous_crop_x = raw_targets[-1] if raw_targets else base_x
+            side = _threat_side(locked_player_sx, threat_sx)
+            if _visible_threat_crop_range(player_sx, threat_sx, frame_w) is None:
+                side = 0
+
+            keep_committed_view = (
+                index > 0
+                and side == 0
+                and committed_side != 0
+                and threat_sx is not None
+                and _threat_is_visible(previous_crop_x, threat_sx)
+            )
+            if index == 0 or side == 0:
+                if keep_committed_view:
+                    side = committed_side
                 else:
-                    sides.append(0)
-
-        # Hysteresis: commit to a side (or back to center) only after it
-        # persists for HYBRID_HOLD_SEC worth of keyframes.
-        committed = 0
-        candidate = 0
-        streak = 0
-        desired: list[int] = []
-        for side in sides:
-            if side == candidate:
-                streak += 1
+                    committed_side = 0
+                    candidate_side = 0
+                    side_streak = 0
             else:
-                candidate = side
-                streak = 1
-            if candidate != committed and streak >= hold_samples:
-                committed = candidate
-            desired.append(committed)
+                if side == candidate_side:
+                    side_streak += 1
+                else:
+                    candidate_side = side
+                    side_streak = 1
+                if side != committed_side and side_streak >= hold_samples and view_changes < config.DYNAMIC_MAX_VIEW_CHANGES:
+                    committed_side = side
+                    view_changes += 1
 
-        # Budget: at most HYBRID_MAX_VIEW_CHANGES cuts per clip, spaced at
-        # least HYBRID_MIN_CUT_SPACING_SEC apart. Once the budget is spent the
-        # camera holds for the rest of the clip.
-        changes_used = 0
-        last_change_time = -1e9
-        current_side = 0
-        targets: list[float] = []
-        for key_time, side, threat_sx in zip(key_times, desired, threat_targets):
-            t = float(key_time)
-            if side != current_side:
-                can_cut = (
-                    changes_used < config.HYBRID_MAX_VIEW_CHANGES
-                    and t - last_change_time >= config.HYBRID_MIN_CUT_SPACING_SEC
-                )
-                if can_cut:
-                    current_side = side
-                    changes_used += 1
-                    last_change_time = t
-            hybrid_offset = 0.0 if _player_composition() == "center" else float(config.HYBRID_OFFSET_PX)
-            target = base_x + current_side * hybrid_offset
-            if current_side != 0 and threat_sx is not None:
-                # After committing to a fight side, use the actual red-bar
-                # position to claim extra enemy look-room when it still keeps
-                # the locked player inside the safe zone.
-                target = include_threat_in_crop(target, locked_player_sx, threat_sx)
-            targets.append(target)
+            active_threat_sx = threat_sx if committed_side != 0 and side == committed_side else None
+            player_targets.append(player_sx)
+            threat_targets.append(active_threat_sx)
+            preferred_crop_x = previous_crop_x if keep_committed_view else None
+            target = dynamic_rule_of_thirds_crop_x(player_sx, active_threat_sx, frame_w, preferred_crop_x)
+            target = avoid_minimap_ui(target, player_sx, frame_w, active_threat_sx)
+            raw_targets.append(float(np.clip(target, 0, frame_w - config.CROP_W)))
 
-        if config.CROP_TRANSITION == "cut":
-            # Hold each position and snap to the next one, like a camera cut.
-            positioned = targets
+        if transition == "pan":
+            positioned = _limit_pan_speed(raw_targets, [float(t) for t in key_times], 1)
         else:
-            positioned = limit_pan_speed(targets, [float(t) for t in key_times])
-        smoothed: list[int] = []
-        for value in positioned:
-            value = enforce_safe_zone(float(value), locked_player_sx)
-            value = avoid_minimap_ui(value, locked_player_sx, frame_w)
-            smoothed.append(clamp_crop_x(value, frame_w))
-        return [CropKeyframe(float(t), int(x)) for t, x in zip(key_times, smoothed)]
+            positioned = _hold_small_crop_changes(raw_targets)
+        finalized: list[int] = []
+        for value, player_sx, threat_sx in zip(positioned, player_targets, threat_targets):
+            value = dynamic_rule_of_thirds_crop_x(player_sx, threat_sx, frame_w, value)
+            value = avoid_minimap_ui(value, player_sx, frame_w, threat_sx)
+            finalized.append(clamp_crop_x(value, frame_w))
+        return [CropKeyframe(float(t), int(x)) for t, x in zip(key_times, finalized)]
 
     def interpolate_to_frames(
-        self, keyframes: Sequence[CropKeyframe], source_timestamps: np.ndarray
+        self,
+        keyframes: Sequence[CropKeyframe],
+        source_timestamps: np.ndarray,
+        crop_settings: CropSettings | None = None,
     ) -> list[tuple[int, int, int, int]]:
         if not keyframes:
             return []
+        transition = _crop_transition((crop_settings or CropSettings()).transition)
         key_times = np.array([k.timestamp for k in keyframes], dtype=np.float32)
         key_x = np.array([k.crop_x for k in keyframes], dtype=np.float32)
         ts = np.asarray(source_timestamps, dtype=np.float32)
-        if config.CROP_TRANSITION == "cut":
+        if transition == "cut":
             # Hold each keyframe's position until the next keyframe: hard cut.
             indexes = np.clip(np.searchsorted(key_times, ts, side="right") - 1, 0, len(key_x) - 1)
             x_values = key_x[indexes]
         else:
             x_values = np.interp(ts, key_times, key_x)
         return [(int(round(float(x))), config.CROP_Y, config.CROP_W, config.CROP_H) for x in x_values]
+
+
+def _hold_small_crop_changes(values: Sequence[float]) -> list[float]:
+    if not values:
+        return []
+    threshold = max(1.0, float(config.PAN_DEADBAND_PX))
+    held = [float(values[0])]
+    current = float(values[0])
+    for value in values[1:]:
+        if abs(float(value) - current) >= threshold:
+            current = float(value)
+        held.append(current)
+    return held
+
+
+def _trusted_player_sx(player_sx: float | None, locked_player_sx: float) -> float:
+    if player_sx is None:
+        return float(locked_player_sx)
+    if abs(float(player_sx) - float(locked_player_sx)) > config.CROP_W * 0.45:
+        return float(locked_player_sx)
+    return float(player_sx)
 
 
 def _trajectory_times(clip_start: float, clip_end: float) -> np.ndarray:

@@ -622,10 +622,3 @@ def _fight_type(player: ChampionResult, allies: list[ChampionResult], enemies: l
     ally_count = len(known_allies) if known_allies else len(ally_pool)
     enemy_count = len(known_enemies) if known_enemies else len(enemies)
     return f"{min(max(ally_count, 1), 5)}v{min(max(enemy_count, 1), 5)}"
-
-
-def map_pos_to_screen_hint(map_pos: tuple[float, float], frame_size: tuple[int, int]) -> tuple[float, float]:
-    frame_w, frame_h = frame_size
-    screen_x = frame_w * 0.5 + (map_pos[0] - 0.5) * frame_w * 0.6
-    screen_y = frame_h * 0.5 + (map_pos[1] - 0.5) * frame_h * 0.6
-    return (float(np.clip(screen_x, 0, frame_w)), float(np.clip(screen_y, 0, frame_h)))

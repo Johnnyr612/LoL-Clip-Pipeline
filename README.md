@@ -1,6 +1,6 @@
 # LoL Clip Pipeline
 
-Local pipeline for turning League of Legends source clips into vertical short-form videos with fight detection and adaptive cropping.
+Local pipeline for turning League of Legends source clips into vertical short-form videos with fight detection and dynamic cropping.
 
 ## What It Does
 
@@ -11,11 +11,12 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 - Computes a smooth 3:4 vertical crop focused on the fight.
 - Encodes a 1080x1440 MP4 with FFmpeg.
 - Can send completed clips to TikTok through the Content Posting API after TikTok OAuth connection.
-- Stores job state, progress, flags, output paths, and detection debug data in SQLite.
+- Stores job state, queue/progress, flags, output paths, trim/crop settings, and detection debug data in SQLite.
 
 ## Current Limitations
 
 - Champion recognition now uses the YOLOv8 minimap champion detector weights only for minimap champion detection.
+- Dynamic crop steering uses full-frame health-bar detections only. Minimap detections still help identify champions and teams, but the minimap has no input on the view cropper.
 - TikTok direct posting requires TikTok app review and the `video.publish` scope. Upload-to-inbox with `video.upload` is the recommended first review path.
 
 ## Local YOLO Participant Classification
@@ -183,10 +184,12 @@ git lfs pull
 From the project root:
 
 ```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+If `py -3.12` is not available, install Python 3.12 first. The command `python -3.12` is not valid when `python.exe` points directly at one interpreter; use the Windows launcher `py -3.12`.
 
 Install frontend dependencies:
 
@@ -234,18 +237,48 @@ C:\path\to\CS668 LoL Auto Clip Trimmer\TestClip.mp4
 Runtime files are written outside the repo:
 
 - Database, uploads, temp files, and logs: `%APPDATA%\LoLClipApp`
-- Encoded clips and minimap detection debug images: `%USERPROFILE%\Videos\LoLClipApp`
+- Encoded clips and minimap detection debug images: `D:\LoLClipOutputVids` by default
+
+Override the output folder with:
+
+```env
+LOL_CLIP_OUTPUT_DIR=D:\LoLClipOutputVids
+```
+
+## Dashboard State
+
+The dashboard has three main tabs:
+
+- `Jobs`: start local-path jobs, pick a highlight checkpoint, choose trim presets, choose crop view settings, monitor the active queue, browse previous outputs, preview the final vertical clip, inspect media/crop debug, and post completed clips to TikTok.
+- `Label Review`: review raw files and model-generated trim boundaries for future VideoMAE training data.
+- `Settings`: view/open local folders and save source clip folders.
+
+The backend intentionally runs one processing job at a time with a semaphore. If you start multiple clips back to back, the newest jobs enter `queued` status and the `Active Queue` panel shows which job is running and which jobs are waiting.
 
 ## Crop Composition
 
-The vertical crop stays at 3:4 (`810x1080` from a 1920x1080 source, then scaled to `1080x1440`). By default, hybrid crop mode uses rule-of-thirds composition once a visible enemy threat stays on one side of the player long enough: threats on the right place the player near the left third, and threats on the left place the player near the right third. When no reliable threat side is visible, the crop remains centered.
+The vertical crop stays at 3:4 (`810x1080` from a 1920x1080 source, then scaled to `1080x1440`). The dashboard sends crop settings per job. `dynamic` mode is tuned for locked-camera clips: it starts centered, waits for persistent visible enemy direction, reframes with rule-of-thirds look room when the enemy can fit, limits non-center view changes, and recenters when no enemy threat remains.
+
+Dynamic crop steering only uses thick, stable full-frame health bars:
+
+- Green health bars anchor the player.
+- Thick red health bars define visible enemy threat direction.
+- Narrow minion/ward-like red bars are filtered out.
+- Minimap champion detections and minimap player positions do not move the crop.
+
+The output panel's `Crop plan` section records the chosen mode, transition, movement range, keyframe count, position changes, sample crop positions, and the number of health-bar samples that steered the crop. If movement is `0px`, Jump and Smooth will look identical for that output because the crop path resolved to a fixed view.
 
 Useful `.env` controls:
 
-- `LOL_CLIP_CROP_MODE=hybrid` keeps a steady locked-camera crop and cuts toward persistent fight sides.
+- `LOL_CLIP_CROP_MODE=dynamic` follows persistent visible enemy direction in locked-camera clips.
+- `LOL_CLIP_CROP_MODE=static` uses one fixed crop.
+- `LOL_CLIP_CROP_TRANSITION=cut` jumps between chosen crop positions. Set `pan` for a smooth sliding view.
 - `LOL_CLIP_PLAYER_COMPOSITION=thirds` enables look-room framing. Set `center` to keep the player centered.
 - `LOL_CLIP_THIRDS_LOOK_ROOM_PX=20` moves the player 20px farther from the fight-side third, giving the crop more room toward visible enemies.
-- `LOL_CLIP_HYBRID_OFFSET_PX=` defaults to the center-to-third distance plus look-room (`155` px with the default settings). Set a number to override it.
+- `LOL_CLIP_DYNAMIC_THREAT_SIDE_TRIGGER_PX=60` controls how far left/right an enemy must be from the player before it counts as a crop direction.
+- `LOL_CLIP_DYNAMIC_THREAT_HOLD_SEC=1.0` controls how long that direction must persist before the crop reframes.
+- `LOL_CLIP_DYNAMIC_MAX_VIEW_CHANGES=3` caps non-center enemy reframes per clip.
+- `LOL_CLIP_CAMERA_THREAT_SUPPORT_TOLERANCE_PX=170` controls how loosely nearby red health-bar samples are grouped as the same threat.
 
 ## Output Encoding Quality
 

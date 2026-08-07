@@ -82,6 +82,7 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
       </div>
 
       <MediaProfilePanel detectionDebug={detectionDebug} />
+      <CropPlanPanel detectionDebug={detectionDebug} />
 
       <TikTokPanel
         busy={busy}
@@ -286,6 +287,83 @@ function MediaProfilePanel({ detectionDebug }: { detectionDebug: DetectionDebug 
           </div>
         </div>
       </div>
+    </section>
+  );
+}
+
+function CropPlanPanel({ detectionDebug }: { detectionDebug: DetectionDebug }) {
+  const settings = detectionDebug.crop_settings;
+  const debug = detectionDebug.crop_debug;
+  const trim = detectionDebug.trim?.final;
+  if (!settings && !debug && !trim) return null;
+
+  const mode = titleCase(debug?.mode ?? settings?.mode ?? "unknown");
+  const transition = debug?.transition ?? settings?.transition ?? "";
+  const transitionLabel = transition === "pan" ? "Smooth" : transition === "cut" ? "Jump" : titleCase(transition || "unknown");
+  const movement = debug?.movement_px;
+  const threatSignal = debug?.threat_signal;
+  const samples = debug?.sample_keyframes?.length ? debug.sample_keyframes : debug?.sample_frames ?? [];
+
+  return (
+    <section className="divider mt-6 pt-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="section-kicker">Crop plan</p>
+          <h2 className="section-title mt-1">View Settings</h2>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="chip chip-active">{mode}</span>
+          <span className="chip chip-neutral">{transitionLabel}</span>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
+        <div className="surface-muted p-3">
+          <h3 className="text-sm font-semibold">Selected View</h3>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            <span className="chip chip-active">Crop: {mode}</span>
+            <span className="chip chip-neutral">Motion: {transitionLabel}</span>
+            {trim?.duration ? <span className="chip chip-neutral">Clip: {trim.duration.toFixed(1)}s</span> : null}
+          </div>
+        </div>
+        <div className="surface-muted p-3">
+          <h3 className="text-sm font-semibold">Camera Path</h3>
+          {debug ? (
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              <span className={movement ? "chip chip-active" : "chip chip-warning"}>Move: {movement ?? 0}px</span>
+              <span className="chip chip-neutral">x {debug.x_min ?? "?"} to {debug.x_max ?? "?"}</span>
+              <span className="chip chip-neutral">{debug.keyframe_count ?? 0} keyframes</span>
+              <span className="chip chip-neutral">{debug.position_changes ?? 0} changes</span>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Run a new job after this update to record crop movement stats.</p>
+          )}
+        </div>
+      </div>
+
+      {debug?.movement_px === 0 ? (
+        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          This output resolved to a fixed crop path, so Jump and Smooth will look identical for this clip.
+        </p>
+      ) : null}
+
+      {threatSignal ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          <span className="chip chip-neutral" title="Frames where a thick, stable red health-bar sample steered the crop.">
+            Healthbar samples: {threatSignal.healthbar_samples ?? 0}
+          </span>
+        </div>
+      ) : null}
+
+      {samples.length ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          {samples.map((sample, index) => (
+            <span className="chip chip-neutral" key={`${sample.time}-${sample.x}-${index}`}>
+              {sample.time === null ? "?" : `${sample.time.toFixed(1)}s`}: x {sample.x}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -497,6 +575,11 @@ function formatVideoTime(value: number) {
   const minutes = Math.floor(value / 60);
   const seconds = Math.floor(value % 60).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function titleCase(value: string) {
+  if (!value) return "";
+  return value.slice(0, 1).toUpperCase() + value.slice(1);
 }
 
 function slugifyHandle(value: string) {

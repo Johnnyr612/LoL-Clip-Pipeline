@@ -92,6 +92,14 @@ COMBAT_HEALTHBAR_MAX_WIDTH = 170
 # (~105px vs ~60px). Bars narrower than this are treated as minions/wards and
 # excluded from fight scoring, kill detection, and camera threat direction.
 COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CHAMPION_BAR_MIN_WIDTH", "85"))
+# Crop steering is intentionally stricter than fight scoring: a single small
+# red minion bar should not yank the camera. Sparse/low-area bars are ignored.
+COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_WIDTH", "96"))
+COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_HEIGHT = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_HEIGHT", "5"))
+COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_AREA = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_AREA", "520"))
+COMBAT_CAMERA_THREAT_SUPPORT_RADIUS_FRAMES = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_SUPPORT_RADIUS_FRAMES", "3"))
+COMBAT_CAMERA_THREAT_MIN_SUPPORT_SAMPLES = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_MIN_SUPPORT_SAMPLES", "3"))
+COMBAT_CAMERA_THREAT_SUPPORT_TOLERANCE_PX = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_SUPPORT_TOLERANCE_PX", "170"))
 COMBAT_HEALTHBAR_IGNORE_LEFT_X_PCT = 0.16
 COMBAT_HEALTHBAR_IGNORE_LEFT_Y_MAX_PCT = 0.72
 
@@ -129,14 +137,13 @@ PLAYER_COMPOSITION = os.environ.get("LOL_CLIP_PLAYER_COMPOSITION", "thirds").str
 THREAT_FRAME_MARGIN_PX = 70
 MINIMAP_UI_AVOID_MARGIN_PX = 30
 # Crop mode:
-#   "hybrid"   - default. Holds a steady shot, but eases toward the fight side
-#                when threats stay on one flank of the champion for a while.
-#                Best for locked camera: static feel + captures fight direction.
+#   "dynamic"  - default. For locked camera: starts centered, waits for a
+#                persistent visible enemy side, then reframes with thirds
+#                composition while limiting view changes.
 #   "static"   - one fixed crop for the whole clip, zero movement.
-#   "adaptive" - continuously pans based on detected player/threat positions
-#                (for unlocked camera recordings).
-CROP_MODE = os.environ.get("LOL_CLIP_CROP_MODE", "hybrid").strip().lower()
-# Fixed crop x for static mode and the base position for hybrid mode. Default
+CROP_MODE = os.environ.get("LOL_CLIP_CROP_MODE", "dynamic").strip().lower()
+CROP_MODE = CROP_MODE if CROP_MODE in {"dynamic", "static"} else "dynamic"
+# Fixed crop x for static mode and the base position for dynamic mode. Default
 # centers the 810px crop in the 1920px frame, where a locked camera holds the
 # champion.
 STATIC_CROP_X = int(os.environ.get("LOL_CLIP_STATIC_CROP_X", str((1920 - 810) // 2)))
@@ -145,20 +152,20 @@ STATIC_CROP_X = int(os.environ.get("LOL_CLIP_STATIC_CROP_X", str((1920 - 810) //
 #           camera cut. No sliding.
 #   "pan" - eases between positions at a limited speed.
 CROP_TRANSITION = os.environ.get("LOL_CLIP_CROP_TRANSITION", "cut").strip().lower()
-# Hybrid mode: how far the crop shifts toward the fight side (px). The default
-# is the exact center-to-third distance for an 810px crop.
-HYBRID_OFFSET_PX = _int_env("LOL_CLIP_HYBRID_OFFSET_PX", round(CROP_W / 6) + PLAYER_THIRDS_LOOK_ROOM_PX)
-# Hybrid mode: how far from the champion the threats must sit (px) before that
-# flank counts as the fight side.
-HYBRID_SIDE_TRIGGER_PX = int(os.environ.get("LOL_CLIP_HYBRID_SIDE_TRIGGER_PX", "170"))
-# Hybrid mode: how long threats must persist on one side before the camera
-# repositions, and before it recenters after they leave.
-HYBRID_HOLD_SEC = float(os.environ.get("LOL_CLIP_HYBRID_HOLD_SEC", "3.0"))
-# Hybrid mode: hard budget on view changes per clip. Once spent, the camera
-# holds its position for the remainder of the clip.
-HYBRID_MAX_VIEW_CHANGES = int(os.environ.get("LOL_CLIP_HYBRID_MAX_VIEW_CHANGES", "3"))
-# Hybrid mode: minimum seconds between consecutive view changes.
-HYBRID_MIN_CUT_SPACING_SEC = float(os.environ.get("LOL_CLIP_HYBRID_MIN_CUT_SPACING_SEC", "4.0"))
+# Dynamic mode: how far from the champion the threat must sit (px) before that
+# flank counts as a left/right fight side.
+DYNAMIC_THREAT_SIDE_TRIGGER_PX = int(
+    os.environ.get("LOL_CLIP_DYNAMIC_THREAT_SIDE_TRIGGER_PX", os.environ.get("LOL_CLIP_HYBRID_SIDE_TRIGGER_PX", "60"))
+)
+# Dynamic mode: how long the same enemy side must persist before the camera
+# reframes. Missing threats recenter immediately after filtering.
+DYNAMIC_THREAT_HOLD_SEC = float(
+    os.environ.get("LOL_CLIP_DYNAMIC_THREAT_HOLD_SEC", os.environ.get("LOL_CLIP_HYBRID_HOLD_SEC", "1.0"))
+)
+# Dynamic mode: hard budget on non-center enemy reframes per clip.
+DYNAMIC_MAX_VIEW_CHANGES = int(
+    os.environ.get("LOL_CLIP_DYNAMIC_MAX_VIEW_CHANGES", os.environ.get("LOL_CLIP_HYBRID_MAX_VIEW_CHANGES", "3"))
+)
 
 MAX_CROP_KEYFRAMES = 61
 KEYFRAME_INTERVAL_SEC = 1.0
@@ -209,7 +216,7 @@ _APPDATA_BASE = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roamin
 APPDATA_DIR = _APPDATA_BASE / "LoLClipApp"
 TEMP_DIR = APPDATA_DIR / "temp"
 LOG_DIR = APPDATA_DIR / "logs"
-OUTPUT_DIR = Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "LoLClipApp"
+OUTPUT_DIR = Path(os.environ.get("LOL_CLIP_OUTPUT_DIR", r"D:\LoLClipOutputVids")).expanduser()
 DB_PATH = APPDATA_DIR / "lol_clip_app.sqlite3"
 
 TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "").strip()

@@ -50,6 +50,39 @@ export type TikTokStatus = {
 
 export type DetectionDebug = {
   media_profile?: MediaProfileDebug;
+  crop_settings?: {
+    mode?: string;
+    transition?: string;
+  };
+  crop_debug?: {
+    mode?: string;
+    transition?: string;
+    frame_count?: number;
+    keyframe_count?: number;
+    x_min?: number | null;
+    x_max?: number | null;
+    x_start?: number | null;
+    x_end?: number | null;
+    movement_px?: number;
+    position_changes?: number;
+    unique_positions?: number;
+    sample_keyframes?: Array<{ time: number; x: number }>;
+    sample_frames?: Array<{ time: number | null; x: number }>;
+    threat_signal?: {
+      healthbar_samples?: number;
+    };
+    note?: string;
+  };
+  trim?: {
+    settings?: Record<string, unknown>;
+    final?: {
+      clip_start?: number;
+      clip_end?: number;
+      duration?: number;
+      fight_start?: number;
+      fight_end?: number;
+    };
+  };
   summary?: {
     player?: string;
     allies?: string[];

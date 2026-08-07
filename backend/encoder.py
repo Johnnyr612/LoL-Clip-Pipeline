@@ -227,8 +227,10 @@ def _crop_x_expression(
     timestamps: Sequence[float],
     clip_start: float,
     clip_end: float,
+    crop_transition: str | None = None,
 ) -> str:
-    if config.CROP_TRANSITION == "cut":
+    transition = (crop_transition or config.CROP_TRANSITION).strip().lower()
+    if transition == "cut":
         return _step_crop_expression(crops, timestamps, clip_start, clip_end)
     return _linear_crop_expression(crops, timestamps, clip_start, clip_end)
 
@@ -295,6 +297,7 @@ class VideoEncoder:
         crops: Sequence[tuple[int, int, int, int]],
         crop_timestamps: Sequence[float],
         source_profile: MediaProfile | None = None,
+        crop_transition: str | None = None,
     ) -> Path:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
@@ -307,7 +310,7 @@ class VideoEncoder:
 
         try:
             clip_duration = max(0.0, clip_end - clip_start)
-            crop_x = _crop_x_expression(crops, crop_timestamps, clip_start, clip_end)
+            crop_x = _crop_x_expression(crops, crop_timestamps, clip_start, clip_end, crop_transition)
             output_fps = _selected_output_fps(source_profile)
             gop_size = str(max(1, int(round(float(output_fps)))))
             vf = f"crop={config.CROP_W}:{config.CROP_H}:x={crop_x}:y=0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"

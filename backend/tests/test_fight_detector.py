@@ -225,6 +225,41 @@ def test_highlight_trim_settings_can_add_missing_incoming_rewind():
     assert "highlight_preroll_applied" in result.flags
 
 
+def test_model_only_trim_settings_return_raw_model_trim():
+    frames = np.zeros((60, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(60, dtype=np.float32)
+    for idx in range(40):
+        cv2.rectangle(frames[idx], (800, 300), (900, 307), (210, 30, 30), thickness=-1)
+        cv2.rectangle(frames[idx], (820, 360), (935, 367), (40, 210, 60), thickness=-1)
+    for idx in range(40, 60):
+        cv2.rectangle(frames[idx], (820, 360), (935, 367), (40, 210, 60), thickness=-1)
+    trim = TrimResult(clip_start=12, clip_end=30, fight_start=12, fight_end=28, fight_duration=16, dialog_segments=[], flags=["highlight_editor_model"])
+
+    result = apply_highlight_trim_settings(
+        trim,
+        frames,
+        timestamps,
+        60,
+        TrimSettings(
+            fight_start_preroll_sec=4.0,
+            output_context_padding_sec=4.0,
+            combat_event_end_padding_sec=4.0,
+            max_pre_fight_lead_sec=4.0,
+            min_clip_duration_sec=20.0,
+            model_only=True,
+        ),
+    )
+
+    assert result.clip_start == trim.clip_start
+    assert result.clip_end == trim.clip_end
+    assert result.fight_start == trim.fight_start
+    assert result.fight_end == trim.fight_end
+    assert "model_only_trim" in result.flags
+    assert "highlight_preroll_applied" not in result.flags
+    assert "output_context_padding_applied" not in result.flags
+    assert "clip_end_extended_to_combat_event" not in result.flags
+
+
 def test_estimate_visible_enemy_count():
     frames = np.zeros((4, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(4, dtype=np.float32)
@@ -237,37 +272,40 @@ def test_estimate_visible_enemy_count():
 
 
 def test_estimate_combat_screen_x_positions():
-    frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
-    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-    cv2.rectangle(frames[0], (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
-    assert player_positions == [880.0]
-    assert threat_positions == [1050.0]
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1050.0] * 3
 
 
 def test_estimate_combat_screen_x_positions_uses_nearest_red_bar():
-    frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
-    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-    cv2.rectangle(frames[0], (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
-    cv2.rectangle(frames[0], (1280, 300), (1380, 307), (210, 30, 30), thickness=-1)
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+        cv2.rectangle(frame, (1280, 300), (1380, 307), (210, 30, 30), thickness=-1)
 
     _player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
-    assert threat_positions == [1050.0]
+    assert threat_positions == [1050.0] * 3
 
 
 def test_estimate_combat_screen_x_positions_ignores_left_hud_bars():
-    frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
-    cv2.rectangle(frames[0], (190, 220), (300, 227), (40, 210, 60), thickness=-1)
-    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-    cv2.rectangle(frames[0], (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        cv2.rectangle(frame, (190, 220), (300, 227), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
-    assert player_positions == [880.0]
-    assert threat_positions == [1050.0]
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1050.0] * 3
 
 def test_minion_red_health_bars_do_not_count_as_visible_enemies():
     frames = np.zeros((4, 1080, 1920, 3), dtype=np.uint8)
@@ -293,16 +331,17 @@ def test_minion_red_health_bars_do_not_pull_crop_threat_position():
 
 
 def test_champion_red_health_bar_still_pulls_crop_threat_position():
-    frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
-    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-    cv2.rectangle(frames[0], (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
+        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
-    assert player_positions == [880.0]
-    assert threat_positions == [1050.0]
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1050.0] * 3
 
-def test_hybrid_crop_holds_center_when_only_minion_red_bars_are_visible():
+def test_dynamic_crop_holds_center_when_only_minion_red_bars_are_visible():
     frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(8, dtype=np.float32)
     for idx in range(8):
@@ -326,7 +365,7 @@ def test_hybrid_crop_holds_center_when_only_minion_red_bars_are_visible():
     assert all(keyframe.crop_x == config.STATIC_CROP_X for keyframe in keyframes)
 
 
-def test_hybrid_crop_can_shift_after_persistent_champion_red_bar():
+def test_dynamic_crop_can_shift_after_persistent_champion_red_bar():
     frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(8, dtype=np.float32)
     for idx in range(8):

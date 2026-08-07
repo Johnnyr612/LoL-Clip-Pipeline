@@ -32,6 +32,12 @@ type TrimSettingsState = {
   combat_event_end_padding_sec: number;
   max_pre_fight_lead_sec: number;
   min_clip_duration_sec: number;
+  model_only: boolean;
+};
+
+type CropSettingsState = {
+  mode: "static" | "dynamic";
+  transition: "cut" | "pan";
 };
 
 type HighlightCheckpointsPayload = {
@@ -44,16 +50,26 @@ const defaultTrimSettings: TrimSettingsState = {
   output_context_padding_sec: 1.5,
   combat_event_end_padding_sec: 3.0,
   max_pre_fight_lead_sec: 2.5,
-  min_clip_duration_sec: 20.0
+  min_clip_duration_sec: 20.0,
+  model_only: false
 };
 
 const trimPresets: Record<string, TrimSettingsState> = {
+  "Model Only": {
+    fight_start_preroll_sec: 0,
+    output_context_padding_sec: 0,
+    combat_event_end_padding_sec: 0,
+    max_pre_fight_lead_sec: 0,
+    min_clip_duration_sec: 8.0,
+    model_only: true
+  },
   Tight: {
     fight_start_preroll_sec: 0.8,
     output_context_padding_sec: 0.5,
     combat_event_end_padding_sec: 2.0,
     max_pre_fight_lead_sec: 1.2,
-    min_clip_duration_sec: 14.0
+    min_clip_duration_sec: 14.0,
+    model_only: false
   },
   Balanced: defaultTrimSettings,
   Cinematic: {
@@ -61,9 +77,15 @@ const trimPresets: Record<string, TrimSettingsState> = {
     output_context_padding_sec: 2.0,
     combat_event_end_padding_sec: 4.0,
     max_pre_fight_lead_sec: 4.0,
-    min_clip_duration_sec: 24.0
+    min_clip_duration_sec: 24.0,
+    model_only: false
   }
 };
+
+const cropModeOptions: Array<{ value: CropSettingsState["mode"]; label: string; description: string }> = [
+  { value: "dynamic", label: "Dynamic", description: "Starts centered, waits for persistent enemy direction, and limits view changes." },
+  { value: "static", label: "Static", description: "Keeps one fixed centered crop for the whole clip." }
+];
 
 function formatElapsed(totalSeconds: number) {
   const mins = Math.floor(totalSeconds / 60);
@@ -78,6 +100,13 @@ function durationFromJob(job: JobRecord | null) {
   const updated = Date.parse(job.updated_at);
   if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) return 0;
   return Math.floor((updated - created) / 1000);
+}
+
+function ageFromJob(job: JobRecord) {
+  if (!job.created_at) return 0;
+  const created = Date.parse(job.created_at);
+  if (Number.isNaN(created)) return 0;
+  return Math.max(0, Math.floor((Date.now() - created) / 1000));
 }
 
 function normalizeSourcePath(value: string) {
@@ -175,6 +204,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const [outputsOpen, setOutputsOpen] = React.useState(true);
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [trimSettings, setTrimSettings] = React.useState<TrimSettingsState>(defaultTrimSettings);
+  const [cropSettings, setCropSettings] = React.useState<CropSettingsState>({ mode: "dynamic", transition: "cut" });
   const [busy, setBusy] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState("");
   const [elapsed, setElapsed] = React.useState(0);
@@ -184,6 +214,16 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const runningJob = jobs.find((item) => item.status === "running" || item.status === "queued");
   const latestJob = jobs[0] ?? null;
   const progressJob = selectedJob?.history_only ? (runningJob ?? latestJob) : selectedJob;
+  const activeQueue = React.useMemo(
+    () =>
+      jobs
+        .filter((item) => item.status === "running" || item.status === "queued")
+        .sort((a, b) => {
+          if (a.status !== b.status) return a.status === "running" ? -1 : 1;
+          return Date.parse(a.created_at || "") - Date.parse(b.created_at || "");
+        }),
+    [jobs]
+  );
 
   const refreshJobs = React.useCallback(
     async (preferredJobId?: string) => {
@@ -277,6 +317,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         body: JSON.stringify({
           source_path: path,
           trim_settings: trimSettings,
+          crop_settings: cropSettings,
           highlight_checkpoint: selectedCheckpoint
         })
       });
@@ -317,7 +358,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const displayElapsed = elapsed || durationFromJob(job);
 
   return (
-    <aside className="surface-panel self-start p-4 lg:sticky lg:top-24">
+    <aside className="surface-panel max-h-[calc(100vh-7rem)] self-start overflow-y-auto overscroll-contain p-4 pr-3 lg:sticky lg:top-24">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="section-kicker">Pipeline control</p>
@@ -396,10 +437,10 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         </div>
         {advancedOpen ? (
           <div className="mt-3 grid gap-4 text-sm">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {Object.entries(trimPresets).map(([name, preset]) => (
                 <button
-                  className="button min-h-8 px-2 py-1.5 text-xs"
+                  className={trimSettings.model_only === preset.model_only && JSON.stringify(trimSettings) === JSON.stringify(preset) ? "button-primary min-h-8 px-2 py-1.5 text-xs" : "button min-h-8 px-2 py-1.5 text-xs"}
                   key={name}
                   onClick={() => setTrimSettings(preset)}
                   type="button"
@@ -408,48 +449,144 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                 </button>
               ))}
             </div>
+            {trimSettings.model_only ? (
+              <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200">
+                Model Only skips incoming rewind, final context, post-fight hold, minimum clip enforcement, and pre-fight lead caps.
+              </p>
+            ) : null}
             <TrimSlider
+              disabled={trimSettings.model_only}
               label="Incoming rewind"
               max={4}
               min={0}
-              onChange={(value) => setTrimSettings((settings) => ({ ...settings, fight_start_preroll_sec: value }))}
+              onChange={(value) => setTrimSettings((settings) => ({ ...settings, fight_start_preroll_sec: value, model_only: false }))}
               step={0.1}
               value={trimSettings.fight_start_preroll_sec}
             />
             <TrimSlider
+              disabled={trimSettings.model_only}
               label="Max pre-fight lead"
               max={6}
               min={0}
-              onChange={(value) => setTrimSettings((settings) => ({ ...settings, max_pre_fight_lead_sec: value }))}
+              onChange={(value) => setTrimSettings((settings) => ({ ...settings, max_pre_fight_lead_sec: value, model_only: false }))}
               step={0.1}
               value={trimSettings.max_pre_fight_lead_sec}
             />
             <TrimSlider
+              disabled={trimSettings.model_only}
               label="Final context"
               max={5}
               min={0}
-              onChange={(value) => setTrimSettings((settings) => ({ ...settings, output_context_padding_sec: value }))}
+              onChange={(value) => setTrimSettings((settings) => ({ ...settings, output_context_padding_sec: value, model_only: false }))}
               step={0.1}
               value={trimSettings.output_context_padding_sec}
             />
             <TrimSlider
+              disabled={trimSettings.model_only}
               label="Post-fight hold"
               max={8}
               min={0}
-              onChange={(value) => setTrimSettings((settings) => ({ ...settings, combat_event_end_padding_sec: value }))}
+              onChange={(value) => setTrimSettings((settings) => ({ ...settings, combat_event_end_padding_sec: value, model_only: false }))}
               step={0.1}
               value={trimSettings.combat_event_end_padding_sec}
             />
             <TrimSlider
+              disabled={trimSettings.model_only}
               label="Minimum clip"
               max={35}
               min={8}
-              onChange={(value) => setTrimSettings((settings) => ({ ...settings, min_clip_duration_sec: value }))}
+              onChange={(value) => setTrimSettings((settings) => ({ ...settings, min_clip_duration_sec: value, model_only: false }))}
               step={1}
               value={trimSettings.min_clip_duration_sec}
             />
           </div>
         ) : null}
+      </div>
+
+      <div className="divider mt-5 pt-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Crop View</h3>
+          <span className="chip chip-neutral">{cropSettings.mode}</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {cropModeOptions.map((option) => (
+            <button
+              className={cropSettings.mode === option.value ? "button-primary min-h-8 px-2 py-1.5 text-xs" : "button min-h-8 px-2 py-1.5 text-xs"}
+              key={option.value}
+              onClick={() => setCropSettings((settings) => ({ ...settings, mode: option.value }))}
+              title={option.description}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <button
+            className={cropSettings.transition === "cut" ? "button-primary min-h-8 px-2 py-1.5 text-xs" : "button min-h-8 px-2 py-1.5 text-xs"}
+            onClick={() => setCropSettings((settings) => ({ ...settings, transition: "cut" }))}
+            title="Jump directly between chosen crop positions."
+            type="button"
+          >
+            Jump
+          </button>
+          <button
+            className={cropSettings.transition === "pan" ? "button-primary min-h-8 px-2 py-1.5 text-xs" : "button min-h-8 px-2 py-1.5 text-xs"}
+            onClick={() => setCropSettings((settings) => ({ ...settings, transition: "pan" }))}
+            title="Slide smoothly between chosen crop positions."
+            type="button"
+          >
+            Smooth
+          </button>
+        </div>
+      </div>
+
+      <div className="divider mt-5 pt-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Active Queue</h3>
+          <span className="chip chip-neutral">{activeQueue.length}</span>
+        </div>
+        <div className="grid max-h-72 gap-2 overflow-auto pr-1">
+          {activeQueue.length ? (
+            activeQueue.map((queuedJob, index) => {
+              const isSelected = selectedJob?.id === queuedJob.id;
+              const isRunning = queuedJob.status === "running";
+              const waitingPosition = activeQueue.slice(0, index + 1).filter((item) => item.status === "queued").length;
+              const stageLabel = stageNames[queuedJob.stage ?? "queued"] ?? queuedJob.stage ?? "Queued";
+              const progress = Math.max(0, Math.min(100, queuedJob.progress ?? 0));
+              return (
+                <button
+                  className={`grid gap-2 rounded-md border px-3 py-2 text-left text-sm transition ${
+                    isSelected
+                      ? "border-accent bg-blue-50 shadow-sm dark:bg-blue-950/30"
+                      : "border-lane bg-white hover:border-accent hover:shadow-sm dark:border-slate-800 dark:bg-slate-950"
+                  }`}
+                  key={queuedJob.id}
+                  onClick={() => onSelectJob(queuedJob)}
+                  type="button"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-medium">{displaySource(queuedJob.source_path)}</span>
+                    <span className={jobChipClass(queuedJob)}>{isRunning ? "running" : `waiting ${waitingPosition}`}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                    <span className="min-w-0 truncate">{stageLabel}</span>
+                    <span className="shrink-0">{formatElapsed(ageFromJob(queuedJob))}</span>
+                  </div>
+                  {isRunning ? (
+                    <div className="h-1.5 overflow-hidden rounded-full bg-lane dark:bg-slate-800">
+                      <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${progress}%` }} />
+                    </div>
+                  ) : null}
+                </button>
+              );
+            })
+          ) : (
+            <p className="rounded-md border border-dashed border-lane p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              No running or queued jobs.
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="divider mt-5 pt-4">
@@ -474,8 +611,9 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
         {outputsOpen ? <div className="mt-3 grid max-h-80 gap-2 overflow-auto pr-1">
           {outputs.length ? (
             outputs.map((output) => {
-              const historyJob = outputFileToJob(output);
-              const isSelected = selectedJob?.history_only && selectedJob.output_path === output.path;
+              const matchingJob = jobs.find((item) => item.output_path === output.path || output.filename.startsWith(`${item.id}_`));
+              const outputJob = matchingJob ?? outputFileToJob(output);
+              const isSelected = selectedJob?.id === outputJob.id || (selectedJob?.history_only && selectedJob.output_path === output.path);
               return (
                 <button
                   key={output.path}
@@ -484,12 +622,12 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                       ? "border-accent bg-blue-50 shadow-sm dark:bg-blue-950/30"
                       : "border-lane bg-white hover:border-accent hover:shadow-sm dark:border-slate-800 dark:bg-slate-950"
                   }`}
-                  onClick={() => onSelectJob(historyJob)}
+                  onClick={() => onSelectJob(outputJob)}
                   type="button"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="min-w-0 truncate font-medium">{output.filename}</span>
-                    <span className="shrink-0 text-xs text-slate-500 dark:text-slate-400">{formatFileSize(output.size)}</span>
+                    <span className="shrink-0 text-xs text-slate-500 dark:text-slate-400">{matchingJob ? activeJobLabel(matchingJob) : formatFileSize(output.size)}</span>
                   </div>
                   <span className="truncate text-xs text-slate-500 dark:text-slate-400">{formatModified(output.modified_at)}</span>
                 </button>
@@ -579,6 +717,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
 }
 
 function TrimSlider({
+  disabled = false,
   label,
   max,
   min,
@@ -586,6 +725,7 @@ function TrimSlider({
   step,
   value
 }: {
+  disabled?: boolean;
   label: string;
   max: number;
   min: number;
@@ -600,7 +740,8 @@ function TrimSlider({
         <span className="chip chip-neutral min-h-6 px-2 py-0.5">{value.toFixed(step >= 1 ? 0 : 1)}s</span>
       </span>
       <input
-        className="h-2 cursor-pointer accent-blue-600"
+        className="h-2 cursor-pointer accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={disabled}
         max={max}
         min={min}
         onChange={(event) => onChange(Number(event.target.value))}

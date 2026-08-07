@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from . import config, models
-from .cropper import AdaptiveCropper
+from .cropper import AdaptiveCropper, CropSettings
 from .encoder import EncoderError, VideoEncoder, describe_encode_settings
 from .fight_detector import (
     FightDetector,
@@ -64,11 +64,13 @@ class ClipPipeline:
         job_id: str | None = None,
         trim_settings: TrimSettings | None = None,
         highlight_checkpoint_path: Path | None = None,
+        crop_settings: CropSettings | None = None,
     ) -> str:
         job_id = job_id or uuid.uuid4().hex
         db_path = self.db_path
         flags: list[str] = []
         current_stage = "queued"
+        crop_settings = crop_settings or CropSettings()
         if await models.get_job(db_path, job_id) is None:
             await models.create_job(db_path, job_id, source_path)
         try:
@@ -184,6 +186,7 @@ class ClipPipeline:
                 validation.duration,
                 highlight_checkpoint_path,
             )
+            raw_trim = trim
             trim = apply_highlight_trim_settings(
                 trim,
                 bundle.full_frames,
@@ -191,6 +194,13 @@ class ClipPipeline:
                 validation.duration,
                 trim_settings,
             )
+            trim_debug = {
+                "trim": {
+                    "raw_model": _trim_to_debug(raw_trim),
+                    "final": _trim_to_debug(trim),
+                    "settings": _trim_settings_to_debug(trim_settings or TrimSettings()),
+                }
+            }
             await update_job_progress(
                 db_path,
                 job_id,
@@ -251,25 +261,26 @@ class ClipPipeline:
                 job_id,
                 "stage4_crop",
                 10,
-                "Computing adaptive crop trajectory...",
+                "Computing dynamic crop trajectory...",
             )
-            player_map_positions = _upsample_positions(player_positions, bundle.timestamps_mini, bundle.timestamps_full)
             player_screen_x_positions, threat_screen_x_positions = estimate_combat_screen_x_positions(bundle.full_frames)
-            enemies = _normalize_enemy_positions(participants.enemies)
+            threat_signal_debug = _threat_signal_to_debug(threat_screen_x_positions)
             keyframes = self.cropper.compute_keyframes(
                 bundle.full_frames,
                 bundle.timestamps_full,
                 trim.clip_start,
                 trim.clip_end,
-                player_map_positions,
-                enemies,
+                [],
+                [],
                 participants.fight_type,
                 player_screen_x_positions,
                 threat_screen_x_positions,
+                crop_settings,
             )
             clip_mask = (bundle.timestamps_full >= trim.clip_start) & (bundle.timestamps_full <= trim.clip_end)
             clip_timestamps = bundle.timestamps_full[clip_mask]
-            crops = self.cropper.interpolate_to_frames(keyframes, clip_timestamps)
+            crops = self.cropper.interpolate_to_frames(keyframes, clip_timestamps, crop_settings)
+            crop_debug = _crop_path_to_debug(keyframes, crops, clip_timestamps, crop_settings, threat_signal_debug)
             await update_job_progress(
                 db_path,
                 job_id,
@@ -302,6 +313,7 @@ class ClipPipeline:
                 crops,
                 clip_timestamps,
                 validation.media_profile,
+                crop_settings.transition,
             )
             await update_job_progress(
                 db_path,
@@ -317,7 +329,13 @@ class ClipPipeline:
                 status="complete",
                 stage="complete",
                 flags=flags,
-                detection_debug={**detection_debug, **media_debug},
+                detection_debug={
+                    **detection_debug,
+                    **media_debug,
+                    **trim_debug,
+                    "crop_settings": _crop_settings_to_debug(crop_settings),
+                    "crop_debug": crop_debug,
+                },
                 output_path=str(output_path),
                 stage_failed=None,
                 error_detail=None,
@@ -347,29 +365,11 @@ async def _current_stage(db_path: Path, job_id: str) -> str | None:
     return job.get("stage") if job else None
 
 
-def _upsample_positions(
-    positions: list[tuple[float, float] | None],
-    source_timestamps: np.ndarray,
-    target_timestamps: np.ndarray,
-) -> list[tuple[float, float] | None]:
-    if not positions or len(source_timestamps) == 0:
-        return [None for _ in target_timestamps]
-    result: list[tuple[float, float] | None] = []
-    for timestamp in target_timestamps:
-        idx = int(np.argmin(np.abs(source_timestamps - timestamp)))
-        result.append(positions[min(idx, len(positions) - 1)])
-    return result
-
-
-def _normalize_enemy_positions(enemies: list[ChampionResult]) -> list[ChampionResult]:
-    normalized: list[ChampionResult] = []
-    for enemy in enemies:
-        x, y = enemy.mean_pos
-        if x > 1 or y > 1:
-            x = x / 345.0
-            y = y / 540.0
-        normalized.append(ChampionResult(enemy.champion_name, enemy.confidence, enemy.team, (float(x), float(y)), enemy.is_player))
-    return normalized
+def _threat_signal_to_debug(healthbar_values: list[float | None]) -> dict:
+    healthbar_count = sum(1 for value in healthbar_values if value is not None)
+    return {
+        "healthbar_samples": healthbar_count,
+    }
 
 
 def _detection_box(detection) -> tuple[int, int, int, int]:
@@ -432,6 +432,101 @@ def _write_detection_debug(
         )
 
     return _detection_debug_payload(participants, frame_records, team_tracker_summary)
+
+
+def _trim_to_debug(trim) -> dict:
+    return {
+        "clip_start": trim.clip_start,
+        "clip_end": trim.clip_end,
+        "duration": round(max(0.0, trim.clip_end - trim.clip_start), 3),
+        "fight_start": trim.fight_start,
+        "fight_end": trim.fight_end,
+        "fight_duration": trim.fight_duration,
+        "pre_fight_lead": round(max(0.0, trim.fight_start - trim.clip_start), 3),
+        "flags": list(trim.flags),
+    }
+
+
+def _trim_settings_to_debug(settings: TrimSettings) -> dict:
+    return {
+        "fight_start_preroll_sec": settings.fight_start_preroll_sec,
+        "output_context_padding_sec": settings.output_context_padding_sec,
+        "combat_event_end_padding_sec": settings.combat_event_end_padding_sec,
+        "max_pre_fight_lead_sec": settings.max_pre_fight_lead_sec,
+        "min_clip_duration_sec": settings.min_clip_duration_sec,
+        "target_clip_duration_sec": settings.target_clip_duration_sec,
+        "max_clip_duration_sec": settings.max_clip_duration_sec,
+        "conservative_full_fight_trim": settings.conservative_full_fight_trim,
+        "model_only": settings.model_only,
+    }
+
+
+def _crop_settings_to_debug(settings: CropSettings) -> dict:
+    return {
+        "mode": settings.mode,
+        "transition": settings.transition,
+    }
+
+
+def _crop_path_to_debug(
+    keyframes,
+    crops: list[tuple[int, int, int, int]],
+    timestamps: np.ndarray,
+    settings: CropSettings,
+    threat_signal_debug: dict | None = None,
+) -> dict:
+    frame_x = [int(crop[0]) for crop in crops]
+    if not frame_x:
+        return {
+            "mode": settings.mode,
+            "transition": settings.transition,
+            "frame_count": 0,
+            "keyframe_count": len(keyframes),
+            "x_min": None,
+            "x_max": None,
+            "movement_px": 0,
+            "position_changes": 0,
+            "sample_keyframes": [],
+            "threat_signal": threat_signal_debug or {},
+        }
+
+    sample_indexes = np.linspace(0, len(keyframes) - 1, min(8, len(keyframes)), dtype=int) if keyframes else []
+    return {
+        "mode": settings.mode,
+        "transition": settings.transition,
+        "frame_count": len(frame_x),
+        "keyframe_count": len(keyframes),
+        "x_min": min(frame_x),
+        "x_max": max(frame_x),
+        "x_start": frame_x[0],
+        "x_end": frame_x[-1],
+        "movement_px": max(frame_x) - min(frame_x),
+        "position_changes": sum(1 for left, right in zip(frame_x, frame_x[1:]) if left != right),
+        "unique_positions": len(set(frame_x)),
+        "sample_keyframes": [
+            {
+                "time": round(float(keyframes[int(index)].timestamp), 3),
+                "x": int(keyframes[int(index)].crop_x),
+            }
+            for index in sample_indexes
+        ],
+        "sample_frames": _sample_crop_frames(frame_x, timestamps),
+        "threat_signal": threat_signal_debug or {},
+        "note": "movement_px=0 means this crop mode resolved to a fixed camera path for this clip.",
+    }
+
+
+def _sample_crop_frames(frame_x: list[int], timestamps: np.ndarray) -> list[dict]:
+    if not frame_x:
+        return []
+    sample_indexes = np.linspace(0, len(frame_x) - 1, min(8, len(frame_x)), dtype=int)
+    return [
+        {
+            "time": round(float(timestamps[int(index)]), 3) if len(timestamps) > int(index) else None,
+            "x": frame_x[int(index)],
+        }
+        for index in sample_indexes
+    ]
 
 
 def _detection_debug_payload(participants: FightParticipants, frames: list[dict], team_tracker_summary: dict | None = None) -> dict:
