@@ -21,8 +21,16 @@ from backend.fight_detector import (
     finish_on_kill_or_death,
     merge_highlights,
     _best_include_span,
+    _camera_threat_bars,
     _enforce_highlight_duration,
 )
+
+THICK_BAR_H = 10
+THIN_BAR_H = 4
+
+
+def _draw_bar(frame: np.ndarray, x1: int, y1: int, x2: int, height: int, color: tuple[int, int, int]) -> None:
+    cv2.rectangle(frame, (x1, y1), (x2, y1 + height - 1), color, thickness=-1)
 
 
 def test_highlight_merge():
@@ -264,9 +272,9 @@ def test_estimate_visible_enemy_count():
     frames = np.zeros((4, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(4, dtype=np.float32)
     for idx in range(4):
-        cv2.rectangle(frames[idx], (820, 360), (935, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frames[idx], (760, 300), (860, 307), (210, 30, 30), thickness=-1)
-        cv2.rectangle(frames[idx], (900, 300), (1000, 307), (210, 30, 30), thickness=-1)
+        _draw_bar(frames[idx], 820, 360, 935, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frames[idx], 760, 300, 860, THICK_BAR_H, (210, 30, 30))
+        _draw_bar(frames[idx], 900, 300, 1000, THICK_BAR_H, (210, 30, 30))
 
     assert estimate_visible_enemy_count(frames, timestamps, 0, 3) == 2
 
@@ -274,8 +282,8 @@ def test_estimate_visible_enemy_count():
 def test_estimate_combat_screen_x_positions():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
-        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -286,9 +294,9 @@ def test_estimate_combat_screen_x_positions():
 def test_estimate_combat_screen_x_positions_uses_nearest_red_bar():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
-        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
-        cv2.rectangle(frame, (1280, 300), (1380, 307), (210, 30, 30), thickness=-1)
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
+        _draw_bar(frame, 1280, 300, 1380, THICK_BAR_H, (210, 30, 30))
 
     _player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -298,9 +306,9 @@ def test_estimate_combat_screen_x_positions_uses_nearest_red_bar():
 def test_estimate_combat_screen_x_positions_ignores_left_hud_bars():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
-        cv2.rectangle(frame, (190, 220), (300, 227), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+        _draw_bar(frame, 190, 220, 300, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -311,18 +319,18 @@ def test_minion_red_health_bars_do_not_count_as_visible_enemies():
     frames = np.zeros((4, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(4, dtype=np.float32)
     for idx in range(4):
-        cv2.rectangle(frames[idx], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frames[idx], (1000, 300), (1060, 307), (210, 30, 30), thickness=-1)
-        cv2.rectangle(frames[idx], (1120, 330), (1180, 337), (210, 30, 30), thickness=-1)
+        _draw_bar(frames[idx], 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frames[idx], 1000, 300, 1060, THIN_BAR_H, (210, 30, 30))
+        _draw_bar(frames[idx], 1120, 330, 1180, THIN_BAR_H, (210, 30, 30))
 
     assert estimate_visible_enemy_count(frames, timestamps, 0, 3) is None
 
 
 def test_minion_red_health_bars_do_not_pull_crop_threat_position():
     frames = np.zeros((1, 1080, 1920, 3), dtype=np.uint8)
-    cv2.rectangle(frames[0], (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-    cv2.rectangle(frames[0], (1000, 300), (1060, 307), (210, 30, 30), thickness=-1)
-    cv2.rectangle(frames[0], (1120, 330), (1180, 337), (210, 30, 30), thickness=-1)
+    _draw_bar(frames[0], 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+    _draw_bar(frames[0], 1000, 300, 1060, THIN_BAR_H, (210, 30, 30))
+    _draw_bar(frames[0], 1120, 330, 1180, THIN_BAR_H, (210, 30, 30))
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -333,8 +341,8 @@ def test_minion_red_health_bars_do_not_pull_crop_threat_position():
 def test_champion_red_health_bar_still_pulls_crop_threat_position():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
-        cv2.rectangle(frame, (820, 360), (940, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frame, (1000, 300), (1100, 307), (210, 30, 30), thickness=-1)
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -345,8 +353,8 @@ def test_dynamic_crop_holds_center_when_only_minion_red_bars_are_visible():
     frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(8, dtype=np.float32)
     for idx in range(8):
-        cv2.rectangle(frames[idx], (900, 360), (1020, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frames[idx], (1220, 300), (1280, 307), (210, 30, 30), thickness=-1)
+        _draw_bar(frames[idx], 900, 360, 1020, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frames[idx], 1220, 300, 1280, THIN_BAR_H, (210, 30, 30))
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
     keyframes = AdaptiveCropper().compute_keyframes(
@@ -369,8 +377,8 @@ def test_dynamic_crop_can_shift_after_persistent_champion_red_bar():
     frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(8, dtype=np.float32)
     for idx in range(8):
-        cv2.rectangle(frames[idx], (900, 360), (1020, 367), (40, 210, 60), thickness=-1)
-        cv2.rectangle(frames[idx], (1200, 300), (1320, 307), (210, 30, 30), thickness=-1)
+        _draw_bar(frames[idx], 900, 360, 1020, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frames[idx], 1200, 300, 1320, THICK_BAR_H, (210, 30, 30))
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
     keyframes = AdaptiveCropper().compute_keyframes(
@@ -387,6 +395,22 @@ def test_dynamic_crop_can_shift_after_persistent_champion_red_bar():
 
     assert threat_positions == [1260.0] * 8
     assert any(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes)
+
+
+def test_narrow_thick_low_health_champion_bar_pulls_crop_threat_position():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1000, 300, 1044, THICK_BAR_H, (210, 30, 30))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1022.0] * 3
+
+
+def test_wide_thin_merged_minion_wave_is_ignored_as_crop_threat():
+    assert _camera_threat_bars([(1000, 300, 160, THIN_BAR_H)]) == []
 
 def test_predict_highlight_trim_requires_decoded_frames():
     detector = FightDetector()

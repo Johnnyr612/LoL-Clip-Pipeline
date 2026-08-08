@@ -86,17 +86,18 @@ COMBAT_EVENT_MIN_CLIP_DURATION_SEC = float(os.environ.get("LOL_CLIP_MIN_CLIP_SEC
 # CONSERVATIVE_FULL_FIGHT_TRIM is enabled).
 COMBAT_EVENT_TARGET_CLIP_DURATION_SEC = float(os.environ.get("LOL_CLIP_TARGET_CLIP_SEC", "35.0"))
 OUTPUT_CONTEXT_PADDING_SEC = float(os.environ.get("LOL_CLIP_OUTPUT_PADDING_SEC", "1.5"))
-COMBAT_HEALTHBAR_MIN_WIDTH = 45
+COMBAT_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_HEALTHBAR_MIN_WIDTH", "25"))
 COMBAT_HEALTHBAR_MAX_WIDTH = 170
-# Champion health bars are noticeably wider than minion bars at 1920x1080
-# (~105px vs ~60px). Bars narrower than this are treated as minions/wards and
-# excluded from fight scoring, kill detection, and camera threat direction.
-COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CHAMPION_BAR_MIN_WIDTH", "85"))
-# Crop steering is intentionally stricter than fight scoring: a single small
-# red minion bar should not yank the camera. Sparse/low-area bars are ignored.
-COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_WIDTH", "96"))
-COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_HEIGHT = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_HEIGHT", "5"))
-COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_AREA = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_AREA", "520"))
+# Champion health strips are thicker than minion strips at 1920x1080
+# (~9-11px vs ~3-5px). Width is only a low noise floor because visible fill
+# shrinks with remaining health and adjacent minion bars can merge.
+COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CHAMPION_BAR_MIN_WIDTH", "25"))
+COMBAT_CHAMPION_HEALTHBAR_MIN_HEIGHT = int(os.environ.get("LOL_CLIP_CHAMPION_BAR_MIN_HEIGHT", "8"))
+# Crop steering trusts thick red bars. Width and area are kept as modest noise
+# rejection only, so low-health champions can still steer the crop.
+COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_WIDTH", "25"))
+COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_HEIGHT = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_HEIGHT", "8"))
+COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_AREA = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_AREA", "300"))
 COMBAT_CAMERA_THREAT_SUPPORT_RADIUS_FRAMES = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_SUPPORT_RADIUS_FRAMES", "3"))
 COMBAT_CAMERA_THREAT_MIN_SUPPORT_SAMPLES = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_MIN_SUPPORT_SAMPLES", "3"))
 COMBAT_CAMERA_THREAT_SUPPORT_TOLERANCE_PX = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_SUPPORT_TOLERANCE_PX", "170"))

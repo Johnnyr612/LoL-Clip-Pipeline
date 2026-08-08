@@ -333,9 +333,13 @@ def estimate_visible_enemy_count(
 
 
 def _champion_bars(bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
-    """Keep only bars wide enough to be champion health bars. Minion and ward
-    bars are narrower and must not count as fight participants."""
-    return [bar for bar in bars if bar[2] >= config.COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH]
+    """Keep thick champion health bars; width is only a low noise floor."""
+    return [
+        bar
+        for bar in bars
+        if bar[2] >= config.COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH
+        and bar[3] >= config.COMBAT_CHAMPION_HEALTHBAR_MIN_HEIGHT
+    ]
 
 
 def _camera_threat_bars(bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
@@ -506,7 +510,7 @@ def _mask_color(roi: np.ndarray, color: str) -> np.ndarray:
 
 
 def _health_bar_boxes(mask: np.ndarray, offset_x: int, offset_y: int) -> list[tuple[int, int, int, int]]:
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 2))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 2))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     boxes: list[tuple[int, int, int, int]] = []
