@@ -32,6 +32,11 @@ class ValidationResult:
     media_profile: MediaProfile
 
 
+@dataclass(frozen=True)
+class ProcessingSettings:
+    skip_minimap_detection: bool = config.SKIP_MINIMAP_DETECTION
+
+
 class InputValidationError(ValueError):
     pass
 
@@ -65,12 +70,14 @@ class ClipPipeline:
         trim_settings: TrimSettings | None = None,
         highlight_checkpoint_path: Path | None = None,
         crop_settings: CropSettings | None = None,
+        processing_settings: ProcessingSettings | None = None,
     ) -> str:
         job_id = job_id or uuid.uuid4().hex
         db_path = self.db_path
         flags: list[str] = []
         current_stage = "queued"
         crop_settings = crop_settings or CropSettings()
+        processing_settings = processing_settings or ProcessingSettings()
         if await models.get_job(db_path, job_id) is None:
             await models.create_job(db_path, job_id, source_path)
         try:
@@ -81,6 +88,7 @@ class ClipPipeline:
                     "encode_settings": describe_encode_settings(validation.media_profile),
                 },
                 "highlight_checkpoint": str((highlight_checkpoint_path or config.VIDEOMAE_HIGHLIGHT_CHECKPOINT).resolve()),
+                "processing_settings": _processing_settings_to_debug(processing_settings),
             }
             if not validation.has_audio:
                 flags.append("no_audio")
@@ -119,57 +127,70 @@ class ClipPipeline:
 
             current_stage = "stage2_minimap"
             await models.update_job(db_path, job_id, stage=current_stage)
-            await update_job_progress(
-                db_path,
-                job_id,
-                "stage2_minimap",
-                10,
-                "Detecting champion icons on minimap...",
-            )
             stride = max(1, config.MINIMAP_DETECTION_STRIDE)
             minimap_indices = np.arange(0, len(bundle.minimap_frames), stride)
             detection_frames = bundle.minimap_frames[minimap_indices]
             detection_timestamps = bundle.timestamps_mini[minimap_indices]
             detections = []
-            team_tracker = TeamTracker()
-            total_detection_frames = max(len(detection_frames), 1)
-            for index, frame in enumerate(detection_frames):
-                frame_detections = self.minimap_detector.detect_icons(frame)
-                detections.append(frame_detections)
-                detection_boxes = [_detection_box(detection) for detection in frame_detections]
-                clustered = clustered_indices(detection_boxes)
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                for detection_index, detection in enumerate(frame_detections):
-                    if detection_index in clustered:
-                        continue
-                    team_vote, border_confidence = infer_team_from_border(frame_bgr, detection_boxes[detection_index])
-                    team_tracker.update(detection.champion_name, team_vote, border_confidence, detection.match_score)
-                if index and index % 15 == 0:
-                    progress = 10 + int((index / total_detection_frames) * 70)
-                    await update_job_progress(
-                        db_path,
-                        job_id,
-                        "stage2_minimap",
-                        min(progress, 80),
-                        f"Scanning minimap frames {index}/{total_detection_frames}...",
-                    )
-            team_tracker_summary = team_tracker.summary()
-            await models.update_job(db_path, job_id, detection_debug={"team_tracker": team_tracker_summary})
-            detections = _apply_tracked_teams(detections, team_tracker)
-            player_positions = [self.minimap_detector.find_white_box(frame) for frame in bundle.minimap_frames]
-            sampled_player_positions = [
-                _position_to_pixels(player_positions[int(i)], bundle.minimap_frames[int(i)].shape)
-                for i in minimap_indices
-            ]
-            if self.minimap_detector.minimap_boundary_estimated:
-                flags.append("minimap_boundary_estimated")
-            await update_job_progress(
-                db_path,
-                job_id,
-                "stage2_minimap",
-                100,
-                "Minimap scan complete",
-            )
+            sampled_player_positions: list[tuple[float, float] | None] = []
+            team_tracker_summary: dict | None = None
+            if processing_settings.skip_minimap_detection:
+                detection_frames = np.empty((0,), dtype=np.uint8)
+                detection_timestamps = np.empty((0,), dtype=np.float32)
+                await update_job_progress(
+                    db_path,
+                    job_id,
+                    "stage2_minimap",
+                    100,
+                    "Minimap champion detection skipped",
+                )
+            else:
+                await update_job_progress(
+                    db_path,
+                    job_id,
+                    "stage2_minimap",
+                    10,
+                    "Detecting champion icons on minimap...",
+                )
+                team_tracker = TeamTracker()
+                total_detection_frames = max(len(detection_frames), 1)
+                for index, frame in enumerate(detection_frames):
+                    frame_detections = self.minimap_detector.detect_icons(frame)
+                    detections.append(frame_detections)
+                    detection_boxes = [_detection_box(detection) for detection in frame_detections]
+                    clustered = clustered_indices(detection_boxes)
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    for detection_index, detection in enumerate(frame_detections):
+                        if detection_index in clustered:
+                            continue
+                        team_vote, border_confidence = infer_team_from_border(frame_bgr, detection_boxes[detection_index])
+                        team_tracker.update(detection.champion_name, team_vote, border_confidence, detection.match_score)
+                    if index and index % 15 == 0:
+                        progress = 10 + int((index / total_detection_frames) * 70)
+                        await update_job_progress(
+                            db_path,
+                            job_id,
+                            "stage2_minimap",
+                            min(progress, 80),
+                            f"Scanning minimap frames {index}/{total_detection_frames}...",
+                        )
+                team_tracker_summary = team_tracker.summary()
+                await models.update_job(db_path, job_id, detection_debug={"team_tracker": team_tracker_summary})
+                detections = _apply_tracked_teams(detections, team_tracker)
+                player_positions = [self.minimap_detector.find_white_box(frame) for frame in bundle.minimap_frames]
+                sampled_player_positions = [
+                    _position_to_pixels(player_positions[int(i)], bundle.minimap_frames[int(i)].shape)
+                    for i in minimap_indices
+                ]
+                if self.minimap_detector.minimap_boundary_estimated:
+                    flags.append("minimap_boundary_estimated")
+                await update_job_progress(
+                    db_path,
+                    job_id,
+                    "stage2_minimap",
+                    100,
+                    "Minimap scan complete",
+                )
 
             current_stage = "stage3_fight"
             await models.update_job(db_path, job_id, stage=current_stage, flags=flags)
@@ -218,16 +239,19 @@ class ClipPipeline:
             trusted_player_champion = player_champion if player_champion_score >= config.HUD_PLAYER_MATCH_CONFIRM else None
             if trusted_player_champion is None:
                 flags.append("player_hud_champion_low_confidence")
-            participants = self.minimap_detector.aggregate_detections(
-                detections,
-                detection_timestamps,
-                max(0.0, trim.clip_start - config.MINIMAP_CONTEXT_BEFORE_FIGHT_SEC),
-                min(validation.duration, trim.clip_end + config.MINIMAP_CONTEXT_AFTER_FIGHT_SEC),
-                sampled_player_positions,
-                trusted_player_champion,
-            )
             visible_enemy_count = estimate_visible_enemy_count(bundle.full_frames, bundle.timestamps_full, trim.fight_start, trim.fight_end)
-            if visible_enemy_count is not None:
+            if processing_settings.skip_minimap_detection:
+                participants = _participants_without_minimap(trusted_player_champion, player_champion_score, visible_enemy_count)
+            else:
+                participants = self.minimap_detector.aggregate_detections(
+                    detections,
+                    detection_timestamps,
+                    max(0.0, trim.clip_start - config.MINIMAP_CONTEXT_BEFORE_FIGHT_SEC),
+                    min(validation.duration, trim.clip_end + config.MINIMAP_CONTEXT_AFTER_FIGHT_SEC),
+                    sampled_player_positions,
+                    trusted_player_champion,
+                )
+            if visible_enemy_count is not None and not processing_settings.skip_minimap_detection:
                 participants = _cap_participants_to_visible_enemy_count(participants, visible_enemy_count)
             vision_result = classify_fight_participants(bundle.full_frames, bundle.timestamps_full, trim.clip_start, trim.clip_end)
             if vision_result is not None:
@@ -468,6 +492,12 @@ def _crop_settings_to_debug(settings: CropSettings) -> dict:
     }
 
 
+def _processing_settings_to_debug(settings: ProcessingSettings) -> dict:
+    return {
+        "skip_minimap_detection": settings.skip_minimap_detection,
+    }
+
+
 def _crop_path_to_debug(
     keyframes,
     crops: list[tuple[int, int, int, int]],
@@ -530,6 +560,15 @@ def _sample_crop_frames(frame_x: list[int], timestamps: np.ndarray) -> list[dict
 
 
 def _detection_debug_payload(participants: FightParticipants, frames: list[dict], team_tracker_summary: dict | None = None) -> dict:
+    skipped = "minimap_detection_skipped" in participants.flags
+    notes = [
+        "Minimap champion detection was skipped for this job.",
+        "Participant summary uses main-frame HUD, health-bar, and optional local vision signals only.",
+    ] if skipped else [
+        "The white minimap camera box is treated as the recording/player anchor.",
+        "Each crop is the original minimap sample from the final clipped time range.",
+        "Boxes and labels show YOLO minimap champion detections used for participant aggregation.",
+    ]
     return {
         "summary": {
             "player": participants.player.champion_name,
@@ -539,11 +578,7 @@ def _detection_debug_payload(participants: FightParticipants, frames: list[dict]
         },
         "team_tracker": team_tracker_summary or {},
         "frames": frames,
-        "notes": [
-            "The white minimap camera box is treated as the recording/player anchor.",
-            "Each crop is the original minimap sample from the final clipped time range.",
-            "Boxes and labels show YOLO minimap champion detections used for participant aggregation.",
-        ],
+        "notes": notes,
     }
 
 
@@ -620,6 +655,31 @@ def _cap_participants_to_visible_enemy_count(participants: FightParticipants, en
     enemies = sorted(participants.enemies, key=lambda enemy: enemy.confidence, reverse=True)[:enemy_count]
     fight_type = f"1v{max(1, min(5, len(enemies)))}"
     return FightParticipants(participants.player, [], enemies, fight_type, [*participants.flags, "enemy_count_capped_by_healthbars"])
+
+
+def _participants_without_minimap(
+    trusted_player_champion: str | None,
+    trusted_player_score: float,
+    visible_enemy_count: int | None,
+) -> FightParticipants:
+    player = ChampionResult(
+        _known_player_champion(trusted_player_champion, "unknown_champion_0"),
+        max(0.0, trusted_player_score),
+        "ally",
+        (0.5, 0.5),
+        True,
+    )
+    enemy_count = max(1, min(5, int(visible_enemy_count or 1)))
+    enemies = [
+        ChampionResult(f"unknown_enemy_{index}", 0.0, "enemy", (0.5, 0.5))
+        for index in range(enemy_count)
+    ]
+    flags = ["minimap_detection_skipped"]
+    if trusted_player_champion is None:
+        flags.append("no_champions_identified")
+    if visible_enemy_count is not None:
+        flags.append("enemy_count_from_healthbars")
+    return FightParticipants(player, [], enemies, f"1v{enemy_count}", flags)
 
 
 def _apply_vision_participants(

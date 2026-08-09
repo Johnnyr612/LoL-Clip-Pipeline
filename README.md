@@ -4,7 +4,7 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 
 ## What It Does
 
-- Accepts an existing `.mp4` clip path through the dashboard or `/process` API. The backend also has a `/jobs` upload endpoint, but the current dashboard uses local paths.
+- Accepts an existing `.mp4` clip path through the dashboard or `/process` API.
 - Extracts full-frame and minimap frames with OpenCV.
 - Detects post-worthy trim timing with the fine-tuned VideoMAE highlight editor. Jobs fail if that checkpoint is missing or cannot produce a trim.
 - Detects player/enemy context from YOLO minimap champion detections, temporal team-color tracking, HUD portraits, health bars, and optional full-frame YOLO classification.
@@ -49,6 +49,14 @@ $env:LOL_CLIP_MINIMAP_YOLO_DEVICE = "0"
 ```
 
 If the minimap YOLO model cannot load or produces no detections for a frame, that frame contributes no minimap champion detections. The app no longer falls back to the older Hough-circle plus icon/template detector for minimap champion detection.
+
+To focus jobs on the raw clip timing/crop path while leaving minimap champion/team detection for later, enable the dashboard's `Skip minimap detection` option or set:
+
+```powershell
+$env:LOL_CLIP_SKIP_MINIMAP_DETECTION = "1"
+```
+
+Skipped minimap jobs still use the VideoMAE highlight editor, main-frame HUD matching, health-bar crop signals, and optional local full-frame YOLO classification.
 
 ## Team Color Tracking
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
@@ -31,7 +31,7 @@ from .label_review import (
     skip_label_review_record,
     validated_video_path,
 )
-from .pipeline import ClipPipeline
+from .pipeline import ClipPipeline, ProcessingSettings
 from .cropper import CropSettings
 from .fight_detector import TrimSettings
 from .tiktok import TikTokError, TikTokPostOptions
@@ -115,6 +115,13 @@ class CropSettingsRequest(BaseModel):
         if transition not in {"cut", "pan"}:
             transition = config.CROP_TRANSITION
         return CropSettings(mode=mode, transition=transition)
+
+
+class ProcessingSettingsRequest(BaseModel):
+    skip_minimap_detection: bool = config.SKIP_MINIMAP_DETECTION
+
+    def to_processing_settings(self) -> ProcessingSettings:
+        return ProcessingSettings(skip_minimap_detection=bool(self.skip_minimap_detection))
 
 
 class OpenFolderRequest(BaseModel):
@@ -371,36 +378,6 @@ async def tiktok_publish_status(publish_id: str) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/jobs")
-async def create_job(
-    file: UploadFile = File(...),
-    mode: str = Form(config.CROP_MODE),
-    transition: str = Form(config.CROP_TRANSITION),
-) -> dict:
-    if pipeline is None:
-        raise HTTPException(status_code=503, detail="Pipeline not ready")
-    if not file.filename or not file.filename.lower().endswith(".mp4"):
-        raise HTTPException(status_code=422, detail="Only .mp4 uploads are supported")
-    upload_dir = config.APPDATA_DIR / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    job_id = str(uuid.uuid4())
-    source_path = upload_dir / f"{job_id}-{Path(file.filename).name}"
-    with source_path.open("wb") as handle:
-        while chunk := await file.read(1024 * 1024):
-            handle.write(chunk)
-    await models.create_job(config.DB_PATH, job_id, str(source_path))
-    crop_settings = CropSettingsRequest(mode=mode, transition=transition).to_crop_settings()
-
-    async def run_background() -> None:
-        async with job_semaphore:
-            await asyncio.to_thread(
-                lambda: asyncio.run(pipeline.run(source_path, job_id, crop_settings=crop_settings))
-            )
-
-    asyncio.create_task(run_background())
-    return {"accepted": True, "job_id": job_id, "source_path": str(source_path)}
-
-
 @app.get("/jobs")
 async def list_jobs(limit: int = 50) -> dict:
     return {"jobs": await models.list_jobs(config.DB_PATH, limit=limit)}
@@ -472,6 +449,7 @@ async def process_existing(payload: dict) -> dict:
     source_path = _normalize_source_path(payload.get("source_path", ""))
     trim_settings = TrimSettingsRequest(**(payload.get("trim_settings") or {})).to_trim_settings()
     crop_settings = CropSettingsRequest(**(payload.get("crop_settings") or {})).to_crop_settings()
+    processing_settings = ProcessingSettingsRequest(**(payload.get("processing_settings") or {})).to_processing_settings()
     highlight_checkpoint_path = _resolve_highlight_checkpoint(payload.get("highlight_checkpoint", ""))
 
     # Validate input before starting background task
@@ -495,7 +473,7 @@ async def process_existing(payload: dict) -> dict:
     async def run_background() -> None:
         async with job_semaphore:
             await asyncio.to_thread(
-                lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings, highlight_checkpoint_path, crop_settings))
+                lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings, highlight_checkpoint_path, crop_settings, processing_settings))
             )
 
     asyncio.create_task(run_background())

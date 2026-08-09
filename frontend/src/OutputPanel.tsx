@@ -486,6 +486,7 @@ function TikTokPanel({
 function ChampionDetectionPanel({ detectionDebug }: { detectionDebug: DetectionDebug }) {
   const frames = detectionDebug.frames ?? [];
   const summary = detectionDebug.summary;
+  const minimapSkipped = Boolean(detectionDebug.processing_settings?.skip_minimap_detection);
   return (
     <section className="divider mt-6 pt-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -493,7 +494,9 @@ function ChampionDetectionPanel({ detectionDebug }: { detectionDebug: DetectionD
           <p className="section-kicker">Debug review</p>
           <h2 className="section-title mt-1">Champion Detection</h2>
           <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">
-            The pipeline treats the white minimap camera box as the recording anchor. These are sampled minimap crops from the final clipped time range with YOLO champion detections overlaid.
+            {minimapSkipped
+              ? "Minimap champion detection was skipped for this job. The summary uses main-frame HUD, health-bar, and optional local vision signals only."
+              : "The pipeline treats the white minimap camera box as the recording anchor. These are sampled minimap crops from the final clipped time range with YOLO champion detections overlaid."}
           </p>
         </div>
         {summary ? (
@@ -526,7 +529,9 @@ function ChampionDetectionPanel({ detectionDebug }: { detectionDebug: DetectionD
         </div>
       ) : (
         <div className="surface-muted mt-4 p-4 text-sm text-slate-500 dark:text-slate-400">
-          No minimap detection debug frames are available for this job yet. Run a new clip after this update to generate crops and YOLO detection results.
+          {minimapSkipped
+            ? "No minimap debug frames were generated because minimap detection was skipped."
+            : "No minimap detection debug frames are available for this job yet. Run a new clip after this update to generate crops and YOLO detection results."}
         </div>
       )}
     </section>

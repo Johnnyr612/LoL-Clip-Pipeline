@@ -40,6 +40,10 @@ type CropSettingsState = {
   transition: "cut" | "pan";
 };
 
+type ProcessingSettingsState = {
+  skip_minimap_detection: boolean;
+};
+
 type HighlightCheckpointsPayload = {
   checkpoints: HighlightCheckpoint[];
   default_checkpoint: string;
@@ -205,6 +209,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [trimSettings, setTrimSettings] = React.useState<TrimSettingsState>(defaultTrimSettings);
   const [cropSettings, setCropSettings] = React.useState<CropSettingsState>({ mode: "dynamic", transition: "cut" });
+  const [processingSettings, setProcessingSettings] = React.useState<ProcessingSettingsState>({ skip_minimap_detection: false });
   const [busy, setBusy] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState("");
   const [elapsed, setElapsed] = React.useState(0);
@@ -318,6 +323,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
           source_path: path,
           trim_settings: trimSettings,
           crop_settings: cropSettings,
+          processing_settings: processingSettings,
           highlight_checkpoint: selectedCheckpoint
         })
       });
@@ -539,6 +545,23 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
             Smooth
           </button>
         </div>
+      </div>
+
+      <div className="divider mt-5 pt-4">
+        <label className="flex items-start gap-3 rounded-md border border-lane bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-950">
+          <input
+            checked={processingSettings.skip_minimap_detection}
+            className="mt-1 h-4 w-4 accent-blue-600"
+            onChange={(event) => setProcessingSettings({ skip_minimap_detection: event.target.checked })}
+            type="checkbox"
+          />
+          <span className="grid gap-1">
+            <span className="font-semibold text-slate-900 dark:text-slate-100">Skip minimap detection</span>
+            <span className="text-xs leading-5 text-slate-500 dark:text-slate-400">
+              Bypass minimap champion/team detection and rely on VideoMAE, main-frame HUD, health bars, and optional local vision signals.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="divider mt-5 pt-4">

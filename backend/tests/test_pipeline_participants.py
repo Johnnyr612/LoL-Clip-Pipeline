@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from backend.main import ProcessingSettingsRequest
 from backend.minimap_detector import ChampionResult, FightParticipants
-from backend.pipeline import _apply_vision_participants
+from backend.pipeline import _apply_vision_participants, _participants_without_minimap
 from backend.vision_classifier import VisionFightResult
 
 
@@ -36,3 +37,20 @@ def test_vision_participants_preserve_very_confident_hud_player():
 
     assert result.player.champion_name == "Aatrox"
     assert "vision_player_override_ignored" in result.flags
+
+
+def test_skip_minimap_participants_use_hud_player_and_healthbar_enemy_count():
+    result = _participants_without_minimap("Ahri", 0.72, 3)
+
+    assert result.player.champion_name == "Ahri"
+    assert result.player.is_player is True
+    assert result.fight_type == "1v3"
+    assert len(result.enemies) == 3
+    assert "minimap_detection_skipped" in result.flags
+    assert "enemy_count_from_healthbars" in result.flags
+
+
+def test_processing_settings_request_accepts_skip_minimap_flag():
+    settings = ProcessingSettingsRequest(skip_minimap_detection=True).to_processing_settings()
+
+    assert settings.skip_minimap_detection is True

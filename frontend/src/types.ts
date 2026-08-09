@@ -50,6 +50,9 @@ export type TikTokStatus = {
 
 export type DetectionDebug = {
   media_profile?: MediaProfileDebug;
+  processing_settings?: {
+    skip_minimap_detection?: boolean;
+  };
   crop_settings?: {
     mode?: string;
     transition?: string;
