@@ -19,7 +19,7 @@ from .fight_detector import (
 )
 from .frame_io import FrameDecodeError, decode_video
 from .media_probe import MediaProbeError, MediaProfile, probe_media_profile
-from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector
+from .minimap_detector import ChampionResult, FightParticipants, MinimapDetector, _known_player_champion
 from .models import update_job_progress
 from .team_tracker import TeamTracker, clustered_indices, infer_team_from_border
 from .vision_classifier import VisionFightResult, classify_fight_participants

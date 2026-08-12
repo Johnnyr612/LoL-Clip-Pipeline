@@ -33,6 +33,11 @@ def _draw_bar(frame: np.ndarray, x1: int, y1: int, x2: int, height: int, color: 
     cv2.rectangle(frame, (x1, y1), (x2, y1 + height - 1), color, thickness=-1)
 
 
+def _draw_player_enemy_bars(frame: np.ndarray) -> None:
+    _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+    _draw_bar(frame, 1000, 300, 1060, THICK_BAR_H, (210, 30, 30))
+
+
 def test_highlight_merge():
     assert merge_highlights([(5, 10), (11, 14)]) == [(5, 14)]
 
@@ -266,6 +271,81 @@ def test_model_only_trim_settings_return_raw_model_trim():
     assert "highlight_preroll_applied" not in result.flags
     assert "output_context_padding_applied" not in result.flags
     assert "clip_end_extended_to_combat_event" not in result.flags
+
+
+def test_highlight_trim_snaps_early_clip_to_sustained_healthbar_onset():
+    frames = np.zeros((40, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(40, dtype=np.float32)
+    for idx in range(12, 25):
+        _draw_player_enemy_bars(frames[idx])
+    trim = TrimResult(clip_start=2, clip_end=24, fight_start=4, fight_end=24, fight_duration=20, dialog_segments=[], flags=[])
+
+    result = apply_highlight_trim_settings(
+        trim,
+        frames,
+        timestamps,
+        40,
+        TrimSettings(
+            fight_start_preroll_sec=1.0,
+            output_context_padding_sec=0.0,
+            min_clip_duration_sec=4.0,
+        ),
+    )
+
+    assert result.clip_start == 11.0
+    assert result.fight_start == 12.0
+    assert "fight_start_snapped_to_healthbar_onset" in result.flags
+
+
+def test_highlight_trim_does_not_snap_to_single_healthbar_flicker():
+    frames = np.zeros((40, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(40, dtype=np.float32)
+    _draw_player_enemy_bars(frames[12])
+    trim = TrimResult(clip_start=2, clip_end=24, fight_start=4, fight_end=24, fight_duration=20, dialog_segments=[], flags=[])
+
+    result = apply_highlight_trim_settings(
+        trim,
+        frames,
+        timestamps,
+        40,
+        TrimSettings(
+            fight_start_preroll_sec=1.0,
+            output_context_padding_sec=0.0,
+            min_clip_duration_sec=4.0,
+        ),
+    )
+
+    assert result.clip_start == 2.0
+    assert result.fight_start == 4
+    assert "fight_start_snapped_to_healthbar_onset" not in result.flags
+
+
+def test_detect_snaps_early_score_boundary_to_healthbar_onset():
+    class StubFightDetector(FightDetector):
+        def score_windows(self, full_frames: np.ndarray, timestamps: np.ndarray) -> list[float]:
+            scores = [0.0] * 30
+            scores[4:18] = [0.8] * 14
+            return scores
+
+        def transcribe(self, audio_path):
+            return []
+
+    frames = np.zeros((30, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(30, dtype=np.float32)
+    for idx in range(10, 18):
+        _draw_player_enemy_bars(frames[idx])
+
+    result = StubFightDetector().detect(
+        frames,
+        timestamps,
+        30,
+        None,
+        TrimSettings(fight_start_preroll_sec=1.5),
+    )
+
+    assert result.clip_start == 8.5
+    assert result.fight_start == 10.0
+    assert "fight_start_snapped_to_healthbar_onset" in result.flags
 
 
 def test_estimate_visible_enemy_count():

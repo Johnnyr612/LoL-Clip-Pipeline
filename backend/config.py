@@ -120,6 +120,7 @@ FIGHT_START_PREROLL_SEC = float(os.environ.get("LOL_CLIP_FIGHT_START_PREROLL", "
 # seconds before the detected fight start, no matter what dialog extension or
 # padding would otherwise add.
 MAX_PRE_FIGHT_LEAD_SEC = float(os.environ.get("LOL_CLIP_MAX_PRE_FIGHT_LEAD_SEC", "2.5"))
+HEALTHBAR_START_SNAP_SEARCH_SEC = float(os.environ.get("LOL_CLIP_HEALTHBAR_START_SNAP_SEARCH_SEC", "20.0"))
 FIGHT_MIN_DURATION = float(os.environ.get("LOL_CLIP_FIGHT_MIN_DURATION", "4.0"))
 FIGHT_MAX_DURATION = float(os.environ.get("LOL_CLIP_FIGHT_MAX_DURATION", "35.0"))
 FIGHT_MERGE_GAP_SEC = 1.5

@@ -172,6 +172,73 @@ def apply_dialog_extension(
     )
 
 
+def _first_sustained_combat_healthbar_time(
+    full_frames: np.ndarray,
+    timestamps: np.ndarray,
+    search_start: float,
+    search_end: float,
+) -> float | None:
+    indexes = np.flatnonzero((timestamps >= search_start) & (timestamps <= search_end))
+    if len(indexes) == 0:
+        return None
+
+    run_start: float | None = None
+    run_length = 0
+    required = max(1, config.COMBAT_EVENT_MIN_VISIBLE_ENEMY_FRAMES)
+    for index in indexes:
+        frame = full_frames[int(index)]
+        red_bars, green_bars = _combat_health_bars(frame)
+        player_bar = _select_player_health_bar(green_bars)
+        visible_enemies = _enemy_bars_near_player(red_bars, player_bar)
+        if player_bar is not None and visible_enemies:
+            if run_length == 0:
+                run_start = float(timestamps[int(index)])
+            run_length += 1
+            if run_length >= required:
+                return run_start
+        else:
+            run_start = None
+            run_length = 0
+    return None
+
+
+def _snap_trim_start_to_healthbar_onset(
+    trim: TrimResult,
+    full_frames: np.ndarray,
+    timestamps: np.ndarray,
+    source_duration: float,
+    trim_settings: TrimSettings | None = None,
+) -> TrimResult:
+    if len(full_frames) == 0 or len(timestamps) == 0:
+        return trim
+
+    settings = trim_settings or TrimSettings()
+    search_start = max(0.0, min(trim.clip_start, trim.fight_start))
+    search_end = min(source_duration, trim.fight_end, search_start + config.HEALTHBAR_START_SNAP_SEARCH_SEC)
+    onset = _first_sustained_combat_healthbar_time(full_frames, timestamps, search_start, search_end)
+    if onset is None:
+        return trim
+
+    snapped_clip_start = max(0.0, onset - settings.fight_start_preroll_sec)
+    if snapped_clip_start <= trim.clip_start + 0.001:
+        return trim
+
+    fight_start = float(onset)
+    fight_end = trim.fight_end
+    if fight_end - fight_start < config.FIGHT_MIN_DURATION:
+        fight_end = min(source_duration, fight_start + config.FIGHT_MIN_DURATION)
+    clip_end = max(trim.clip_end, fight_end)
+    return TrimResult(
+        clip_start=round(snapped_clip_start, 3),
+        clip_end=round(min(source_duration, clip_end), 3),
+        fight_start=round(fight_start, 3),
+        fight_end=round(min(source_duration, fight_end), 3),
+        fight_duration=round(max(0.0, min(source_duration, fight_end) - fight_start), 3),
+        dialog_segments=trim.dialog_segments,
+        flags=[*trim.flags, "fight_start_snapped_to_healthbar_onset"],
+    )
+
+
 def finish_on_kill_or_death(
     trim: TrimResult,
     full_frames: np.ndarray,
@@ -289,6 +356,7 @@ def apply_highlight_trim_settings(
             dialog_segments=trim.dialog_segments,
             flags=[*trim.flags, "model_only_trim"],
         )
+    trim = _snap_trim_start_to_healthbar_onset(trim, full_frames, timestamps, source_duration, settings)
     desired_start = max(0.0, trim.fight_start - settings.fight_start_preroll_sec)
     clip_start = min(trim.clip_start, desired_start)
     flags = list(trim.flags)
@@ -913,6 +981,13 @@ class FightDetector:
         )
         dialog = self.transcribe(audio_path)
         result = apply_dialog_extension(fight_start, fight_end, source_duration, dialog)
+        result = _snap_trim_start_to_healthbar_onset(
+            result,
+            full_frames,
+            timestamps,
+            source_duration,
+            trim_settings,
+        )
         return TrimResult(
             result.clip_start,
             result.clip_end,
