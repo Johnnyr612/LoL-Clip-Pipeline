@@ -421,12 +421,80 @@ def _camera_threat_bars(bars: list[tuple[int, int, int, int]]) -> list[tuple[int
     ]
 
 
+def _exclude_objective_health_bars(
+    frame: np.ndarray,
+    bars: list[tuple[int, int, int, int]],
+) -> list[tuple[int, int, int, int]]:
+    return [bar for bar in bars if not _has_objective_health_text(frame, bar)]
+
+
+def _has_objective_health_text(frame: np.ndarray, bar: tuple[int, int, int, int]) -> bool:
+    if _has_champion_level_badge(frame, bar):
+        return False
+
+    x, y, width, height = bar
+    frame_h, frame_w = frame.shape[:2]
+    text_x1 = max(0, x + int(width * 0.12))
+    text_x2 = min(frame_w, x + int(width * 0.88))
+    text_y1 = max(0, y - max(32, height * 4))
+    text_y2 = min(frame_h, y + max(2, height // 2))
+    if text_x2 <= text_x1 or text_y2 <= text_y1:
+        return False
+
+    roi = frame[text_y1:text_y2, text_x1:text_x2]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+    light_text = cv2.inRange(hsv, (0, 0, 145), (180, 95, 255))
+    yellow_text = cv2.inRange(hsv, (18, 45, 120), (45, 255, 255))
+    mask = cv2.bitwise_or(light_text, yellow_text)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 1)))
+
+    text_pixels = int(np.count_nonzero(mask))
+    if text_pixels < max(8, int(width * 0.08)):
+        return False
+
+    component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+    glyphs = 0
+    for index in range(1, component_count):
+        _gx, _gy, glyph_w, glyph_h, area = stats[index]
+        if 3 <= area <= 90 and 2 <= glyph_w <= 18 and 4 <= glyph_h <= 18:
+            glyphs += 1
+    return glyphs >= 2 or text_pixels >= max(18, int(width * 0.16))
+
+
+def _has_champion_level_badge(frame: np.ndarray, bar: tuple[int, int, int, int]) -> bool:
+    x, y, _width, height = bar
+    frame_h, frame_w = frame.shape[:2]
+    badge_x1 = max(0, x - 42)
+    badge_x2 = max(0, min(frame_w, x + 4))
+    badge_y1 = max(0, y - max(12, height + 2))
+    badge_y2 = min(frame_h, y + height + max(12, height + 2))
+    if badge_x2 <= badge_x1 or badge_y2 <= badge_y1:
+        return False
+
+    roi = frame[badge_y1:badge_y2, badge_x1:badge_x2]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+    dark = cv2.inRange(hsv, (0, 0, 0), (180, 110, 85))
+    light = cv2.inRange(hsv, (0, 0, 135), (180, 120, 255))
+    yellow = cv2.inRange(hsv, (18, 45, 110), (45, 255, 255))
+    glyph_mask = cv2.bitwise_or(light, yellow)
+    dark_fraction = float(np.count_nonzero(dark)) / float(dark.size)
+    glyph_pixels = int(np.count_nonzero(glyph_mask))
+    return dark_fraction >= 0.18 and glyph_pixels >= 2
+
+
+def _champion_ui_bars(
+    frame: np.ndarray,
+    bars: list[tuple[int, int, int, int]],
+) -> list[tuple[int, int, int, int]]:
+    return [bar for bar in bars if _has_champion_level_badge(frame, bar)]
+
+
 def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[float | None], list[float | None]]:
     player_positions: list[float | None] = []
     threat_positions: list[float | None] = []
     for frame in full_frames:
         red_bars, green_bars = _combat_health_bars(frame)
-        red_bars = _camera_threat_bars(red_bars)
+        red_bars = _exclude_objective_health_bars(frame, _camera_threat_bars(red_bars))
         player_bar = _select_player_health_bar(green_bars)
         if player_bar is None:
             # Without a confirmed player bar there is no reliable anchor, so
@@ -437,7 +505,9 @@ def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[fl
             continue
         x, _, width, _ = player_bar
         player_positions.append(float(x + (width - 1) / 2))
-        threat_positions.append(_nearest_bar_center_x(_enemy_bars_near_player(red_bars, player_bar), player_bar))
+        nearby_enemy_bars = _enemy_bars_near_player(red_bars, player_bar)
+        champion_ui_bars = _champion_ui_bars(frame, nearby_enemy_bars)
+        threat_positions.append(_nearest_bar_center_x(champion_ui_bars or nearby_enemy_bars, player_bar))
     return player_positions, _stabilize_sparse_threat_positions(threat_positions)
 
 
@@ -561,6 +631,8 @@ def _combat_health_bars(frame: np.ndarray) -> tuple[list[tuple[int, int, int, in
     roi_y1, roi_y2 = int(h * 0.08), int(h * 0.82)
     roi_x1, roi_x2 = int(w * 0.02), int(w * 0.96)
     roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+    # Crop steering intentionally only trusts the local player (green) and
+    # enemies (red). Ally-blue bars are left unmasked so they cannot move view.
     red_mask = _mask_color(roi, "red")
     green_mask = _mask_color(roi, "green")
     red_bars = _filter_side_hud_bars(_health_bar_boxes(red_mask, roi_x1, roi_y1), w, h)

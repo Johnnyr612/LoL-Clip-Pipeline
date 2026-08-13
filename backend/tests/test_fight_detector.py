@@ -38,6 +38,33 @@ def _draw_player_enemy_bars(frame: np.ndarray) -> None:
     _draw_bar(frame, 1000, 300, 1060, THICK_BAR_H, (210, 30, 30))
 
 
+def _draw_objective_health_number(frame: np.ndarray, x: int, y: int, text: str = "2032") -> None:
+    cv2.putText(
+        frame,
+        text,
+        (x, y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (235, 220, 150),
+        1,
+        cv2.LINE_AA,
+    )
+
+
+def _draw_champion_level_badge(frame: np.ndarray, x: int, y: int, level: str = "11") -> None:
+    cv2.rectangle(frame, (x, y - 12), (x + 24, y + 16), (10, 18, 24), thickness=-1)
+    cv2.putText(
+        frame,
+        level,
+        (x + 4, y + 8),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (225, 230, 235),
+        1,
+        cv2.LINE_AA,
+    )
+
+
 def test_highlight_merge():
     assert merge_highlights([(5, 10), (11, 14)]) == [(5, 14)]
 
@@ -428,6 +455,109 @@ def test_champion_red_health_bar_still_pulls_crop_threat_position():
 
     assert player_positions == [880.0] * 3
     assert threat_positions == [1050.0] * 3
+
+
+def test_blue_ally_health_bars_do_not_pull_crop_threat_position():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1180, 300, 1300, THICK_BAR_H, (30, 120, 230))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [None] * 3
+
+
+def test_blue_ally_health_bars_do_not_beat_red_enemy_for_crop_threat():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 960, 300, 1060, THICK_BAR_H, (30, 120, 230))
+        _draw_bar(frame, 1200, 300, 1320, THICK_BAR_H, (210, 30, 30))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1260.0] * 3
+
+
+def test_objective_health_number_red_bar_does_not_pull_crop_threat_position():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1000, 300, 1120, THICK_BAR_H, (210, 30, 30))
+        _draw_objective_health_number(frame, 1036, 299)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [None] * 3
+
+
+def test_objective_health_number_red_bar_does_not_beat_real_enemy_threat():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 980, 300, 1100, THICK_BAR_H, (210, 30, 30))
+        _draw_objective_health_number(frame, 1016, 299)
+        _draw_bar(frame, 1200, 310, 1320, THICK_BAR_H, (210, 30, 30))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1260.0] * 3
+
+
+def test_objective_health_number_above_bar_does_not_pull_crop_threat_position():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1000, 320, 1120, THICK_BAR_H, (210, 30, 30))
+        _draw_objective_health_number(frame, 1036, 300)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [None] * 3
+
+
+def test_enemy_name_above_champion_badge_red_bar_still_pulls_crop_threat_position():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_champion_level_badge(frame, 1168, 305)
+        cv2.putText(
+            frame,
+            "EnemyName",
+            (1195, 292),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (235, 235, 235),
+            1,
+            cv2.LINE_AA,
+        )
+        _draw_bar(frame, 1200, 300, 1320, THICK_BAR_H, (210, 30, 30))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1260.0] * 3
+
+
+def test_champion_badge_enemy_bar_beats_nearer_unbadged_red_noise_for_crop_threat():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 640, 330, 760, THICK_BAR_H, (210, 30, 30))
+        _draw_champion_level_badge(frame, 1168, 305)
+        _draw_bar(frame, 1200, 300, 1320, THICK_BAR_H, (210, 30, 30))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1260.0] * 3
+
 
 def test_dynamic_crop_holds_center_when_only_minion_red_bars_are_visible():
     frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)

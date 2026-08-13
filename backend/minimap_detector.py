@@ -168,51 +168,6 @@ class MinimapDetector:
         )
         return self._minimap_rect
 
-    def find_white_box(self, minimap_frame: np.ndarray) -> Optional[tuple[float, float]]:
-        h, w = minimap_frame.shape[:2]
-        hsv = cv2.cvtColor(minimap_frame, cv2.COLOR_RGB2HSV)
-        mask = cv2.inRange(hsv, (0, 0, 220), (180, 30, 255))
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for contour in sorted(contours, key=cv2.contourArea, reverse=True):
-            area = cv2.contourArea(contour)
-            if not 400 <= area <= 2500:
-                continue
-            peri = cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
-            x, y, bw, bh = cv2.boundingRect(approx)
-            aspect = bw / max(bh, 1)
-            if len(approx) >= 4 and 0.5 <= aspect <= 2.0:
-                return ((x + bw / 2) / w, (y + bh / 2) / h)
-        outline = self._find_camera_box_outline(minimap_frame)
-        if outline is not None:
-            x, y, bw, bh = outline
-            return ((x + bw / 2) / w, (y + bh / 2) / h)
-        return None
-
-    @staticmethod
-    def _find_camera_box_outline(minimap_frame: np.ndarray) -> Optional[Rect]:
-        h, w = minimap_frame.shape[:2]
-        hsv = cv2.cvtColor(minimap_frame, cv2.COLOR_RGB2HSV)
-        mask = cv2.inRange(hsv, (0, 0, 150), (180, 95, 255))
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        candidates: list[tuple[float, Rect]] = []
-        for contour in contours:
-            x, y, bw, bh = cv2.boundingRect(contour)
-            area = float(cv2.contourArea(contour))
-            aspect = bw / max(bh, 1)
-            if not 0.55 <= aspect <= 1.70:
-                continue
-            if not w * 0.12 <= bw <= w * 0.55:
-                continue
-            if not h * 0.08 <= bh <= h * 0.55:
-                continue
-            candidates.append((area, (x, y, bw, bh)))
-        if not candidates:
-            return None
-        return max(candidates, key=lambda item: item[0])[1]
-
     @staticmethod
     def classify_team(roi_rgb: np.ndarray) -> Literal["ally", "enemy", "unknown"]:
         h, w = roi_rgb.shape[:2]
@@ -402,17 +357,14 @@ class MinimapDetector:
         timestamps: np.ndarray,
         fight_start: float,
         fight_end: float,
-        player_positions: list[Optional[tuple[float, float]]],
         player_champion: str | None = None,
     ) -> FightParticipants:
         tracks: list[list[RawIconDetection]] = []
         last_points: list[tuple[int, int]] = []
-        for frame_index, (frame_detections, timestamp) in enumerate(zip(detections_per_frame, timestamps)):
+        for frame_detections, timestamp in zip(detections_per_frame, timestamps):
             if not fight_start <= float(timestamp) <= fight_end:
                 continue
-            frame_player_pos = player_positions[frame_index] if frame_index < len(player_positions) else None
-            if frame_player_pos is None:
-                frame_player_pos = _player_detection_position(frame_detections, player_champion)
+            frame_player_pos = _player_detection_position(frame_detections, player_champion)
             frame_detections = _fight_relevant_detections(frame_detections, frame_player_pos)
             used_tracks: set[int] = set()
             for detection in frame_detections:
@@ -451,19 +403,10 @@ class MinimapDetector:
             results.append(ChampionResult(champion_name, vote_count / len(track), team, tuple(points.mean(axis=0))))
         results = _merge_duplicate_champions(results)
 
-        valid_player_positions = [p for p in player_positions if p is not None]
-        if not valid_player_positions:
+        player_idx = next((i for i, r in enumerate(results) if r.team == "ally" and r.champion_name == player_champion), None)
+        if player_idx is None:
             flags.append("player_pos_unknown")
             player_idx = next((i for i, r in enumerate(results) if r.team == "ally"), 0)
-        else:
-            median_player = np.median(np.array(valid_player_positions), axis=0)
-            ally_indices = [i for i, r in enumerate(results) if r.team == "ally"] or list(range(len(results)))
-            player_idx = min(
-                ally_indices,
-                key=lambda i: float(np.linalg.norm(np.array(results[i].mean_pos) - median_player)),
-            )
-            if len(valid_player_positions) / max(len(player_positions), 1) < 0.30:
-                flags.append("player_pos_low_confidence")
 
         player = ChampionResult(
             _known_player_champion(player_champion, results[player_idx].champion_name),

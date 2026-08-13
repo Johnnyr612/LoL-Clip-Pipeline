@@ -132,7 +132,6 @@ class ClipPipeline:
             detection_frames = bundle.minimap_frames[minimap_indices]
             detection_timestamps = bundle.timestamps_mini[minimap_indices]
             detections = []
-            sampled_player_positions: list[tuple[float, float] | None] = []
             team_tracker_summary: dict | None = None
             if processing_settings.skip_minimap_detection:
                 detection_frames = np.empty((0,), dtype=np.uint8)
@@ -177,11 +176,6 @@ class ClipPipeline:
                 team_tracker_summary = team_tracker.summary()
                 await models.update_job(db_path, job_id, detection_debug={"team_tracker": team_tracker_summary})
                 detections = _apply_tracked_teams(detections, team_tracker)
-                player_positions = [self.minimap_detector.find_white_box(frame) for frame in bundle.minimap_frames]
-                sampled_player_positions = [
-                    _position_to_pixels(player_positions[int(i)], bundle.minimap_frames[int(i)].shape)
-                    for i in minimap_indices
-                ]
                 if self.minimap_detector.minimap_boundary_estimated:
                     flags.append("minimap_boundary_estimated")
                 await update_job_progress(
@@ -248,7 +242,6 @@ class ClipPipeline:
                     detection_timestamps,
                     max(0.0, trim.clip_start - config.MINIMAP_CONTEXT_BEFORE_FIGHT_SEC),
                     min(validation.duration, trim.clip_end + config.MINIMAP_CONTEXT_AFTER_FIGHT_SEC),
-                    sampled_player_positions,
                     trusted_player_champion,
                 )
             if visible_enemy_count is not None and not processing_settings.skip_minimap_detection:
@@ -262,7 +255,6 @@ class ClipPipeline:
                 detection_frames,
                 detections,
                 detection_timestamps,
-                sampled_player_positions,
                 trim.clip_start,
                 trim.clip_end,
                 participants,
@@ -418,7 +410,6 @@ def _write_detection_debug(
     frames: np.ndarray,
     detections_per_frame: list[list],
     timestamps: np.ndarray,
-    player_positions: list[tuple[float, float] | None],
     clip_start: float,
     clip_end: float,
     participants: FightParticipants,
@@ -441,8 +432,7 @@ def _write_detection_debug(
         idx = int(index)
         frame = frames[idx]
         detections = detections_per_frame[idx] if idx < len(detections_per_frame) else []
-        player_pos = player_positions[idx] if idx < len(player_positions) else None
-        overlay = _draw_detection_overlay(frame, detections, player_pos)
+        overlay = _draw_detection_overlay(frame, detections)
         filename = f"minimap_{ordinal:02d}_{float(timestamps[idx]):06.2f}s.jpg".replace(".", "_", 1)
         path = debug_dir / filename
         cv2.imwrite(str(path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
@@ -450,7 +440,6 @@ def _write_detection_debug(
             {
                 "timestamp": round(float(timestamps[idx]), 3),
                 "image_url": f"/outputs/debug/{job_id}/{filename}",
-                "white_box": _debug_point(player_pos),
                 "detections": [_debug_detection(item) for item in detections],
             }
         )
@@ -565,7 +554,6 @@ def _detection_debug_payload(participants: FightParticipants, frames: list[dict]
         "Minimap champion detection was skipped for this job.",
         "Participant summary uses main-frame HUD, health-bar, and optional local vision signals only.",
     ] if skipped else [
-        "The white minimap camera box is treated as the recording/player anchor.",
         "Each crop is the original minimap sample from the final clipped time range.",
         "Boxes and labels show YOLO minimap champion detections used for participant aggregation.",
     ]
@@ -582,7 +570,7 @@ def _detection_debug_payload(participants: FightParticipants, frames: list[dict]
     }
 
 
-def _draw_detection_overlay(frame: np.ndarray, detections: list, player_pos: tuple[float, float] | None) -> np.ndarray:
+def _draw_detection_overlay(frame: np.ndarray, detections: list) -> np.ndarray:
     overlay = frame.copy()
     for detection in detections:
         x, y = detection.circle_center
@@ -591,17 +579,7 @@ def _draw_detection_overlay(frame: np.ndarray, detections: list, player_pos: tup
         cv2.rectangle(overlay, (max(0, x - radius), max(0, y - radius)), (min(overlay.shape[1] - 1, x + radius), min(overlay.shape[0] - 1, y + radius)), color, 2)
         label = f"{detection.champion_name} {detection.match_score:.2f}"
         cv2.putText(overlay, label, (max(0, x - radius), max(14, y - radius - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
-    if player_pos is not None:
-        px, py = int(round(player_pos[0])), int(round(player_pos[1]))
-        cv2.drawMarker(overlay, (px, py), (255, 255, 255), cv2.MARKER_CROSS, 18, 2)
-        cv2.putText(overlay, "white box anchor", (max(0, px - 44), max(14, py - 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
     return overlay
-
-
-def _debug_point(point: tuple[float, float] | None) -> dict | None:
-    if point is None:
-        return None
-    return {"x": round(float(point[0]), 2), "y": round(float(point[1]), 2)}
 
 
 def _debug_detection(detection) -> dict:
@@ -719,10 +697,3 @@ def _apply_vision_participants(
     ]
     fight_type = vision_result.fight_type or f"1v{max(1, len(enemies))}"
     return FightParticipants(player, [], enemies, fight_type, flags)
-
-
-def _position_to_pixels(position: tuple[float, float] | None, frame_shape: tuple[int, ...]) -> tuple[float, float] | None:
-    if position is None:
-        return None
-    height, width = frame_shape[:2]
-    return (float(position[0] * width), float(position[1] * height))

@@ -132,7 +132,6 @@ export type MediaProfileDebug = {
 export type DetectionDebugFrame = {
   timestamp: number;
   image_url: string;
-  white_box?: { x: number; y: number } | null;
   detections: DetectionDebugResult[];
 };
 

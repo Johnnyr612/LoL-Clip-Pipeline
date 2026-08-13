@@ -496,7 +496,7 @@ function ChampionDetectionPanel({ detectionDebug }: { detectionDebug: DetectionD
           <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">
             {minimapSkipped
               ? "Minimap champion detection was skipped for this job. The summary uses main-frame HUD, health-bar, and optional local vision signals only."
-              : "The pipeline treats the white minimap camera box as the recording anchor. These are sampled minimap crops from the final clipped time range with YOLO champion detections overlaid."}
+              : "These are sampled minimap crops from the final clipped time range with YOLO champion detections overlaid."}
           </p>
         </div>
         {summary ? (
@@ -517,11 +517,6 @@ function ChampionDetectionPanel({ detectionDebug }: { detectionDebug: DetectionD
               </div>
               <img className="mt-3 w-full rounded-md border border-lane bg-black object-contain dark:border-slate-800" src={frame.image_url} alt={`Minimap champion detections at ${frame.timestamp.toFixed(2)} seconds`} />
               <div className="mt-3 grid gap-2">
-                {frame.white_box ? (
-                  <p className="text-xs text-slate-600 dark:text-slate-400">White box anchor: x {frame.white_box.x}, y {frame.white_box.y}</p>
-                ) : (
-                  <p className="text-xs text-slate-500 dark:text-slate-400">White box anchor not visible in this sample.</p>
-                )}
                 <DetectionList detections={frame.detections} />
               </div>
             </article>

@@ -37,24 +37,6 @@ def test_minimap_boundary_detection(detector: MinimapDetector):
     assert abs(h - 331) <= 5
 
 
-def test_white_box_detection(detector: MinimapDetector):
-    minimap = np.zeros((540, 345, 3), dtype=np.uint8)
-    cv2.rectangle(minimap, (100, 120), (140, 160), (255, 255, 255), thickness=-1)
-    centroid = detector.find_white_box(minimap)
-    assert centroid is not None
-    assert abs(centroid[0] * 345 - 120) <= 3
-    assert abs(centroid[1] * 540 - 140) <= 3
-
-
-def test_white_box_outline_detection(detector: MinimapDetector):
-    minimap = np.zeros((270, 345, 3), dtype=np.uint8)
-    cv2.rectangle(minimap, (95, 128), (228, 253), (235, 235, 235), thickness=3)
-    centroid = detector.find_white_box(minimap)
-    assert centroid is not None
-    assert abs(centroid[0] * 345 - 161.5) <= 5
-    assert abs(centroid[1] * 270 - 190.5) <= 5
-
-
 def _circle(color_rgb: tuple[int, int, int]) -> np.ndarray:
     frame = np.zeros((48, 48, 3), dtype=np.uint8)
     cv2.circle(frame, (24, 24), 20, color_rgb, thickness=6)
@@ -155,7 +137,7 @@ def test_vote_aggregation(detector: MinimapDetector):
     for idx in range(10):
         name = "Aatrox" if idx < 8 else "Ahri"
         detections.append([RawIconDetection((50, 50), 12, "ally", name, 0.9, False)])
-    result = detector.aggregate_detections(detections, np.arange(10), 0, 9, [(50, 50)] * 10)
+    result = detector.aggregate_detections(detections, np.arange(10), 0, 9)
     assert result.player.champion_name == "Aatrox"
 
 
@@ -168,7 +150,7 @@ def test_aggregation_dedupes_champion_tracks(detector: MinimapDetector):
             RawIconDetection((115, 115), 12, "enemy", "Ahri", 0.8, False),
         ]
     ]
-    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, [(50, 50)])
+    result = detector.aggregate_detections(detections, np.array([0]), 0, 1)
     assert result.fight_type == "1v1"
     assert [enemy.champion_name for enemy in result.enemies] == ["Ahri"]
 
@@ -181,11 +163,11 @@ def test_aggregation_filters_champions_far_from_fight(detector: MinimapDetector)
             RawIconDetection((300, 250), 12, "enemy", "Thresh", 0.9, False),
         ]
     ]
-    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, [(50, 50)])
+    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, "Aatrox")
     assert [enemy.champion_name for enemy in result.enemies] == ["Ahri"]
 
 
-def test_aggregation_uses_player_champion_when_white_box_missing(detector: MinimapDetector):
+def test_aggregation_uses_player_champion_for_fight_filtering(detector: MinimapDetector):
     detections = [
         [
             RawIconDetection((50, 50), 12, "ally", "Swain", 0.9, False),
@@ -193,7 +175,7 @@ def test_aggregation_uses_player_champion_when_white_box_missing(detector: Minim
             RawIconDetection((300, 250), 12, "enemy", "Taric", 0.9, False),
         ]
     ]
-    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, [None], "Swain")
+    result = detector.aggregate_detections(detections, np.array([0]), 0, 1, "Swain")
     assert result.player.champion_name == "Swain"
     assert [enemy.champion_name for enemy in result.enemies] == ["Jax"]
     assert result.fight_type == "1v1"

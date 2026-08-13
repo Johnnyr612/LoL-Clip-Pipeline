@@ -1,6 +1,7 @@
 ﻿__pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 .mypy_cache/
 .ruff_cache/
 .venv/
@@ -19,6 +20,9 @@ frontend/dist/
 # Precomputed training frames (large numpy arrays)
 precomputed/
 precomputed_v2/
+
+# Project-local FFmpeg binaries
+tools/ffmpeg/
 
 # Training clips
 training_clips/
@@ -44,4 +48,3 @@ Thumbs.db
 .venv.broken-*/
 python-3.12*.exe
 .python312/
-

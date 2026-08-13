@@ -392,6 +392,28 @@ def test_dynamic_crop_uses_locked_center_for_threat_side_when_green_bar_drifts()
     assert config.THREAT_FRAME_MARGIN_PX <= 1071 - keyframes[-1].crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
 
 
+def test_dynamic_crop_switches_right_when_enemy_is_right_of_off_center_player():
+    frames = np.zeros((6, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(6, dtype=np.float32)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        5.0,
+        [(0.5, 0.5)] * 6,
+        [],
+        "1v1",
+        [880.0] * 6,
+        [650.0, 650.0, 1010.0, 1010.0, 1010.0, 1010.0],
+        CropSettings(mode="dynamic", transition="cut"),
+    )
+
+    assert keyframes[1].crop_x < config.STATIC_CROP_X
+    assert keyframes[2].crop_x > config.STATIC_CROP_X
+    assert all(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes[2:])
+    assert all(config.THREAT_FRAME_MARGIN_PX <= 1010 - keyframe.crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX for keyframe in keyframes[2:])
+
+
 def test_dynamic_crop_recenters_when_enemy_signal_disappears():
     frames = np.zeros((5, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(5, dtype=np.float32)

@@ -414,7 +414,9 @@ class AdaptiveCropper:
                 threat_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
             )
             previous_crop_x = raw_targets[-1] if raw_targets else base_x
-            side = _threat_side(locked_player_sx, threat_sx)
+            locked_side = _threat_side(locked_player_sx, threat_sx)
+            player_relative_side = _threat_side(player_sx, threat_sx)
+            side = player_relative_side or locked_side
             if _visible_threat_crop_range(player_sx, threat_sx, frame_w) is None:
                 side = 0
 

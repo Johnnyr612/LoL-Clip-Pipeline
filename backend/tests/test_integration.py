@@ -1,49 +1,48 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 import subprocess
+from fractions import Fraction
+from pathlib import Path
 
 import aiosqlite
 import pytest
 
+from backend import config
+from backend.media_probe import probe_media_profile
 from backend.pipeline import ClipPipeline
 
 
-@pytest.mark.asyncio
-async def test_generated_sample_pipeline_stages_1_to_6(tmp_path):
+def test_sample_clip_pipeline_stages_1_to_6(tmp_path, monkeypatch):
+    asyncio.run(_run_sample_clip_pipeline_stages_1_to_6(tmp_path, monkeypatch))
+
+
+async def _run_sample_clip_pipeline_stages_1_to_6(tmp_path, monkeypatch):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         pytest.skip("ffmpeg/ffprobe not installed")
 
-    source = tmp_path / "generated_sample.mp4"
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=green:s=1920x1080:r=120:d=60",
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc=channel_layout=mono:sample_rate=16000",
-            "-vf",
-            "drawbox=x=500:y=120:w=500:h=180:color=red:t=fill:enable='between(t,15,30)'",
-            "-shortest",
-            str(source),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    source = config.PROJECT_ROOT / "TestClip.mp4"
+    if not source.is_file():
+        pytest.skip("TestClip.mp4 not found")
+    checkpoint = _highlight_checkpoint()
+    source_profile = probe_media_profile(source)
+
+    output_dir = tmp_path / "outputs"
+    temp_dir = tmp_path / "temp"
+    output_dir.mkdir()
+    temp_dir.mkdir()
+    monkeypatch.setattr(config, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(config, "TEMP_DIR", temp_dir)
 
     db_path = tmp_path / "test.sqlite3"
     pipeline = ClipPipeline(db_path)
-    job_id = await pipeline.run(source, "generated_sample")
-    output = tmp_path / "dummy"
+    job_id = await pipeline.run(source, "sample_clip", highlight_checkpoint_path=checkpoint)
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))).fetchone()
-    assert row["status"] == "complete"
+    assert row["status"] == "complete", row["error_detail"]
     assert row["stage_failed"] is None
     assert row["output_path"]
 
@@ -56,4 +55,11 @@ async def test_generated_sample_pipeline_stages_1_to_6(tmp_path):
     stream = json.loads(probe.stdout)["streams"][0]
     assert stream["width"] == 1080
     assert stream["height"] == 1440
-    assert stream["r_frame_rate"] == "60/1"
+    assert float(Fraction(stream["r_frame_rate"])) == pytest.approx(source_profile.fps, abs=0.01)
+
+
+def _highlight_checkpoint() -> Path:
+    checkpoints = sorted((config.PROJECT_ROOT / "checkpoints").glob("videomae_lol_highlight_editor*.pt"))
+    if not checkpoints:
+        pytest.skip("highlight editor checkpoint not found")
+    return checkpoints[0]
