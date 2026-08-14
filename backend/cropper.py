@@ -78,6 +78,22 @@ def _threat_side(player_sx: float, threat_sx: float | None) -> int:
     return 0
 
 
+def _default_thirds_side() -> int:
+    side = str(config.DYNAMIC_DEFAULT_THIRDS_SIDE or "right").strip().lower()
+    if side in {"left", "-1"}:
+        return -1
+    if side in {"center", "none", "0"}:
+        return 0
+    return 1
+
+
+def _synthetic_thirds_threat_sx(player_sx: float, side: int, frame_w: int = 1920) -> float | None:
+    if side == 0:
+        return None
+    offset = max(float(config.DYNAMIC_THREAT_SIDE_TRIGGER_PX + 1), float(config.CROP_W) * 0.35)
+    return float(np.clip(float(player_sx) + side * offset, 0.0, float(frame_w - 1)))
+
+
 def player_anchor_x(player_sx: float, threat_sx: float | None) -> float:
     if _player_composition() != "thirds":
         return config.CROP_W / 2
@@ -287,6 +303,94 @@ def windowed_median(
     return float(np.median(valid))
 
 
+def _opening_threat_hint(
+    key_times: np.ndarray,
+    timestamps: np.ndarray,
+    player_series: Sequence[float | None] | None,
+    threat_series: Sequence[float | None] | None,
+    locked_player_sx: float,
+    frame_w: int,
+    focus_start: float | None,
+) -> tuple[float, float] | None:
+    if focus_start is None or not threat_series or len(key_times) == 0 or len(timestamps) == 0:
+        return None
+
+    clip_start = float(key_times[0])
+    lookahead_end = clip_start + max(0.0, float(config.DYNAMIC_OPENING_LOOKAHEAD_SEC))
+    focus_time = float(focus_start)
+    if focus_time < clip_start or focus_time > lookahead_end:
+        return None
+
+    ts = np.asarray(timestamps, dtype=np.float32)
+    search_start = max(clip_start, focus_time - config.PLAYER_SX_MEDIAN_WINDOW_SEC)
+    search_end = min(lookahead_end, focus_time + config.PLAYER_SX_MEDIAN_WINDOW_SEC)
+    indexes = np.flatnonzero((ts >= search_start) & (ts <= search_end))
+    for index in indexes:
+        idx = int(index)
+        if idx >= len(threat_series):
+            continue
+        threat_sx = threat_series[idx]
+        if threat_sx is None:
+            continue
+        player_sx = None if player_series is None or idx >= len(player_series) else player_series[idx]
+        trusted_player_sx = _trusted_player_sx(player_sx, locked_player_sx)
+        side = _threat_side(trusted_player_sx, threat_sx) or _threat_side(locked_player_sx, threat_sx)
+        if side == 0 or _visible_threat_crop_range(trusted_player_sx, threat_sx, frame_w) is None:
+            continue
+        return float(ts[idx]), float(threat_sx)
+    return None
+
+
+def _opening_thirds_side(
+    key_times: np.ndarray,
+    timestamps: np.ndarray,
+    player_series: Sequence[float | None] | None,
+    threat_series: Sequence[float | None] | None,
+    locked_player_sx: float,
+    frame_w: int,
+    focus_start: float | None,
+    opening_hint: tuple[float, float] | None,
+) -> int:
+    if opening_hint is not None:
+        hint_time, hint_threat_sx = opening_hint
+        player_sx = _trusted_player_sx(
+            windowed_median(player_series, timestamps, hint_time, config.PLAYER_SX_MEDIAN_WINDOW_SEC),
+            locked_player_sx,
+        )
+        return _threat_side(player_sx, hint_threat_sx) or _threat_side(locked_player_sx, hint_threat_sx) or _default_thirds_side()
+
+    if threat_series and len(key_times) > 0 and len(timestamps) > 0:
+        clip_start = float(key_times[0])
+        lookahead_end = clip_start + max(0.0, float(config.DYNAMIC_OPENING_LOOKAHEAD_SEC))
+        if focus_start is not None:
+            lookahead_end = max(lookahead_end, float(focus_start))
+        ts = np.asarray(timestamps, dtype=np.float32)
+        indexes = np.flatnonzero((ts >= clip_start) & (ts <= lookahead_end))
+        for index in indexes:
+            idx = int(index)
+            if idx >= len(threat_series):
+                continue
+            threat_sx = threat_series[idx]
+            if threat_sx is None:
+                continue
+            player_sx = None if player_series is None or idx >= len(player_series) else player_series[idx]
+            trusted_player_sx = _trusted_player_sx(player_sx, locked_player_sx)
+            side = _threat_side(trusted_player_sx, threat_sx) or _threat_side(locked_player_sx, threat_sx)
+            if side != 0 and _visible_threat_crop_range(trusted_player_sx, threat_sx, frame_w) is not None:
+                return side
+
+    return _default_thirds_side()
+
+
+def _opening_thirds_until(key_times: np.ndarray, focus_start: float | None) -> float:
+    if len(key_times) == 0:
+        return 0.0
+    clip_start = float(key_times[0])
+    if focus_start is None:
+        return float(key_times[-1])
+    return min(float(focus_start), clip_start + max(0.0, float(config.DYNAMIC_OPENING_LOOKAHEAD_SEC)))
+
+
 def limit_pan_speed(values: Sequence[float], times: Sequence[float]) -> list[float]:
     """Turn raw per-keyframe targets into a camera-like pan: seed the opening
     shot from the first few keyframes, ignore micro-adjustments, and cap the
@@ -358,6 +462,7 @@ class AdaptiveCropper:
         player_screen_x_positions: Sequence[float | None] | None = None,
         threat_screen_x_positions: Sequence[float | None] | None = None,
         crop_settings: CropSettings | None = None,
+        focus_start: float | None = None,
     ) -> list[CropKeyframe]:
         frame_h, frame_w = frames.shape[1:3]
         settings = crop_settings or CropSettings()
@@ -379,6 +484,7 @@ class AdaptiveCropper:
                 stabilize_screen_positions(threat_screen_x_positions),
                 frame_w,
                 transition,
+                focus_start,
             )
 
     def _dynamic_keyframes(
@@ -389,10 +495,11 @@ class AdaptiveCropper:
         threat_series: list[float | None] | None,
         frame_w: int,
         transition: str,
+        focus_start: float | None = None,
     ) -> list[CropKeyframe]:
-        """Locked-camera dynamic crop: begin centered, shift to thirds only
-        after a visible enemy side persists, then return to center when it
-        cannot fit or disappears."""
+        """Locked-camera dynamic crop: begin with thirds composition, reframe
+        toward visible enemy sides, then return to the default thirds view when
+        the enemy signal cannot fit or disappears."""
         base_x = float(clamp_crop_x(float(config.STATIC_CROP_X), frame_w))
         locked_player_sx = base_x + config.CROP_W / 2
         interval = float(key_times[1] - key_times[0]) if len(key_times) > 1 else 1.0
@@ -405,6 +512,9 @@ class AdaptiveCropper:
         raw_targets: list[float] = []
         player_targets: list[float] = []
         threat_targets: list[float | None] = []
+        opening_hint = _opening_threat_hint(key_times, timestamps, player_series, threat_series, locked_player_sx, frame_w, focus_start)
+        opening_side = _opening_thirds_side(key_times, timestamps, player_series, threat_series, locked_player_sx, frame_w, focus_start, opening_hint)
+        opening_side_until = _opening_thirds_until(key_times, focus_start)
         for index, timestamp in enumerate(key_times):
             player_sx = _trusted_player_sx(
                 windowed_median(player_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC),
@@ -413,21 +523,33 @@ class AdaptiveCropper:
             threat_sx = windowed_median(
                 threat_series, timestamps, float(timestamp), config.PLAYER_SX_MEDIAN_WINDOW_SEC
             )
+            if opening_hint is not None and float(timestamp) <= opening_hint[0]:
+                _hint_time, hint_threat_sx = opening_hint
+                if _visible_threat_crop_range(player_sx, hint_threat_sx, frame_w) is not None:
+                    threat_sx = hint_threat_sx
             previous_crop_x = raw_targets[-1] if raw_targets else base_x
             locked_side = _threat_side(locked_player_sx, threat_sx)
             player_relative_side = _threat_side(player_sx, threat_sx)
             side = player_relative_side or locked_side
             if _visible_threat_crop_range(player_sx, threat_sx, frame_w) is None:
                 side = 0
+            composition_threat_sx = threat_sx
+            composition_player_sx = player_sx
+            uses_default_thirds = False
+            if side == 0 and float(timestamp) <= opening_side_until and _player_composition() == "thirds":
+                side = opening_side
+                composition_player_sx = locked_player_sx
+                composition_threat_sx = _synthetic_thirds_threat_sx(composition_player_sx, opening_side, frame_w)
+                uses_default_thirds = composition_threat_sx is not None
 
             keep_committed_view = (
                 index > 0
                 and side == 0
                 and committed_side != 0
-                and threat_sx is not None
-                and _threat_is_visible(previous_crop_x, threat_sx)
+                and composition_threat_sx is not None
+                and _threat_is_visible(previous_crop_x, composition_threat_sx)
             )
-            if index == 0 or side == 0:
+            if side == 0:
                 if keep_committed_view:
                     side = committed_side
                 else:
@@ -442,14 +564,15 @@ class AdaptiveCropper:
                     side_streak = 1
                 if side != committed_side and side_streak >= hold_samples and view_changes < config.DYNAMIC_MAX_VIEW_CHANGES:
                     committed_side = side
-                    view_changes += 1
+                    if not uses_default_thirds:
+                        view_changes += 1
 
-            active_threat_sx = threat_sx if committed_side != 0 and side == committed_side else None
-            player_targets.append(player_sx)
+            active_threat_sx = composition_threat_sx if committed_side != 0 and side == committed_side else None
+            player_targets.append(composition_player_sx)
             threat_targets.append(active_threat_sx)
             preferred_crop_x = previous_crop_x if keep_committed_view else None
-            target = dynamic_rule_of_thirds_crop_x(player_sx, active_threat_sx, frame_w, preferred_crop_x)
-            target = avoid_minimap_ui(target, player_sx, frame_w, active_threat_sx)
+            target = dynamic_rule_of_thirds_crop_x(composition_player_sx, active_threat_sx, frame_w, preferred_crop_x)
+            target = avoid_minimap_ui(target, composition_player_sx, frame_w, active_threat_sx)
             raw_targets.append(float(np.clip(target, 0, frame_w - config.CROP_W)))
 
         if transition == "pan":

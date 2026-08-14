@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from . import config
+from .ffmpeg_tools import find_executable
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class FrameDecodeError(RuntimeError):
 
 
 def extract_audio(input_path: Path, job_id: str) -> Path | None:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_executable("ffmpeg")
     if ffmpeg is None:
         return None
     temp_dir = config.TEMP_DIR / job_id

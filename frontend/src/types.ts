@@ -9,6 +9,10 @@ export type JobRecord = {
   error_detail?: string | null;
   source_path?: string | null;
   output_path?: string | null;
+  tiktok_publish_id?: string | null;
+  tiktok_publish_mode?: string | null;
+  tiktok_publish_status?: string | null;
+  tiktok_publish_fail_reason?: string | null;
   detection_debug?: string;
   created_at: string;
   updated_at: string;

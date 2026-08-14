@@ -13,10 +13,63 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
   const [disableStitch, setDisableStitch] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
+  const [publishState, setPublishState] = React.useState<TikTokPublishState | null>(null);
 
   React.useEffect(() => {
     void refreshTikTokStatus();
   }, []);
+
+  React.useEffect(() => {
+    if (!job?.tiktok_publish_id) {
+      setPublishState(null);
+      return;
+    }
+    setPublishState({
+      publish_id: job.tiktok_publish_id,
+      mode: job.tiktok_publish_mode ?? "inbox",
+      status: job.tiktok_publish_status ?? "initialized",
+      fail_reason: job.tiktok_publish_fail_reason ?? null
+    });
+  }, [job?.id, job?.tiktok_publish_id, job?.tiktok_publish_mode, job?.tiktok_publish_status, job?.tiktok_publish_fail_reason]);
+
+  const publishTerminal = isTikTokTerminalStatus(publishState?.status);
+
+  React.useEffect(() => {
+    if (!publishState?.publish_id || publishState.mode !== "inbox" || publishTerminal) return;
+    const publishId = publishState.publish_id;
+    const controller = new AbortController();
+    let stopped = false;
+
+    async function pollPublishStatus() {
+      try {
+        const response = await fetch(`/tiktok/publish/${encodeURIComponent(publishId)}/status`, {
+          signal: controller.signal
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || stopped) return;
+        setPublishState((current) => {
+          if (!current || current.publish_id !== publishId) return current;
+          return {
+            ...current,
+            status: payload.status ?? current.status,
+            fail_reason: payload.fail_reason ?? null
+          };
+        });
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.warn("TikTok status polling failed", error);
+        }
+      }
+    }
+
+    void pollPublishStatus();
+    const interval = window.setInterval(() => void pollPublishStatus(), 10000);
+    return () => {
+      stopped = true;
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [publishState?.publish_id, publishState?.mode, publishTerminal]);
 
   async function refreshTikTokStatus() {
     const status = await fetch("/tiktok/status").then((response) => response.json());
@@ -47,7 +100,13 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         setMessage(payload.detail ?? "TikTok upload failed");
         return;
       }
-      setMessage(mode === "inbox" ? `Sent to TikTok inbox: ${payload.publish_id}` : `Direct post initialized: ${payload.publish_id}`);
+      setPublishState({
+        publish_id: payload.publish_id,
+        mode: payload.mode ?? mode,
+        status: payload.status ?? "initialized",
+        fail_reason: null
+      });
+      setMessage(mode === "inbox" ? "TikTok upload started. Waiting for inbox confirmation..." : `Direct post initialized: ${payload.publish_id}`);
     } finally {
       setBusy(false);
     }
@@ -95,6 +154,7 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
         hasOutput={Boolean(job?.id && !job.history_only && job.status === "complete" && outputUrl)}
         message={message}
         mode={mode}
+        publishState={publishState}
         onConnect={() => {
           window.location.href = `/tiktok/auth?mode=${mode}`;
         }}
@@ -115,6 +175,17 @@ export function OutputPanel({ job }: { job: JobRecord | null }) {
       <ChampionDetectionPanel detectionDebug={detectionDebug} />
     </section>
   );
+}
+
+type TikTokPublishState = {
+  publish_id: string;
+  mode: string;
+  status: string;
+  fail_reason?: string | null;
+};
+
+function isTikTokTerminalStatus(status: string | null | undefined) {
+  return status === "SEND_TO_USER_INBOX" || status === "FAILED";
 }
 
 function DescriptionEditor({
@@ -387,6 +458,7 @@ function TikTokPanel({
   setDisableStitch,
   setMode,
   setPrivacyLevel,
+  publishState,
   scope,
   description
 }: {
@@ -408,11 +480,13 @@ function TikTokPanel({
   setDisableStitch: (value: boolean) => void;
   setMode: (value: "inbox" | "direct") => void;
   setPrivacyLevel: (value: string) => void;
+  publishState: TikTokPublishState | null;
   scope: string;
   description: string;
 }) {
   const requiredScope = mode === "direct" ? "video.publish" : "video.upload";
   const hasRequiredScope = scope.split(",").map((item) => item.trim()).includes(requiredScope);
+  const statusText = tikTokPublishStatusText(publishState, busy);
   return (
     <section className="divider mt-6 pt-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -474,13 +548,44 @@ function TikTokPanel({
             </div>
           </div>
         ) : (
-          <p className="surface-muted p-3 text-slate-600 dark:text-slate-400">Inbox upload sends the clip to TikTok so the creator can finish editing and posting there.</p>
+          <div className="grid gap-3">
+            <p className="surface-muted p-3 text-slate-600 dark:text-slate-400">Inbox upload sends the clip to TikTok so the creator can finish editing and posting there.</p>
+            {statusText ? (
+              <div className={publishState?.status === "FAILED" ? "rounded-md border border-danger bg-red-50 p-3 text-sm text-danger dark:bg-red-950/30" : "surface-muted p-3 text-sm text-slate-700 dark:text-slate-300"}>
+                <p className="font-semibold">{statusText.title}</p>
+                {statusText.body ? <p className="mt-1 leading-6">{statusText.body}</p> : null}
+              </div>
+            ) : null}
+            {publishState?.status === "SEND_TO_USER_INBOX" ? (
+              <div className="rounded-md border border-emerald-300 bg-emerald-50 p-4 text-sm leading-6 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-100">
+                <p className="font-semibold">In your TikTok inbox</p>
+                <p className="mt-1">
+                  Draft sent to @aaaplay44&apos;s TikTok inbox. Open the TikTok app - tap the inbox notification - finish the post and set visibility to Public.
+                </p>
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
 
       {message ? <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">{message}</p> : null}
     </section>
   );
+}
+
+function tikTokPublishStatusText(state: TikTokPublishState | null, busy: boolean) {
+  if (busy) {
+    return { title: "Uploading to TikTok", body: "Sending the finished MP4 to the TikTok inbox upload endpoint." };
+  }
+  if (!state || state.mode !== "inbox") return null;
+  if (state.status === "SEND_TO_USER_INBOX") {
+    return { title: "In your TikTok inbox", body: "" };
+  }
+  if (state.status === "FAILED") {
+    return { title: `Failed: ${state.fail_reason || "TikTok did not provide a reason"}`, body: "Fix the issue and send the clip again." };
+  }
+  const label = state.status === "initialized" ? "Upload accepted" : titleCase(state.status.toLowerCase().replace(/_/g, " "));
+  return { title: "Processing on TikTok", body: `${label}. Waiting for TikTok to finish sending the draft to the account inbox.` };
 }
 
 function ChampionDetectionPanel({ detectionDebug }: { detectionDebug: DetectionDebug }) {

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from backend import config
-from backend.cropper import AdaptiveCropper
+from backend.cropper import AdaptiveCropper, clamp_crop_x, rule_of_thirds_crop_x
 from backend.fight_detector import (
     DialogSegment,
     FightDetector,
@@ -63,6 +63,11 @@ def _draw_champion_level_badge(frame: np.ndarray, x: int, y: int, level: str = "
         1,
         cv2.LINE_AA,
     )
+
+
+def _right_thirds_crop_x(player_sx: float = 960.0) -> int:
+    threat_sx = player_sx + max(float(config.DYNAMIC_THREAT_SIDE_TRIGGER_PX + 1), float(config.CROP_W) * 0.35)
+    return clamp_crop_x(rule_of_thirds_crop_x(player_sx, threat_sx))
 
 
 def test_highlight_merge():
@@ -559,7 +564,7 @@ def test_champion_badge_enemy_bar_beats_nearer_unbadged_red_noise_for_crop_threa
     assert threat_positions == [1260.0] * 3
 
 
-def test_dynamic_crop_holds_center_when_only_minion_red_bars_are_visible():
+def test_dynamic_crop_uses_default_thirds_when_only_minion_red_bars_are_visible():
     frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(8, dtype=np.float32)
     for idx in range(8):
@@ -580,7 +585,7 @@ def test_dynamic_crop_holds_center_when_only_minion_red_bars_are_visible():
     )
 
     assert threat_positions == [None] * 8
-    assert all(keyframe.crop_x == config.STATIC_CROP_X for keyframe in keyframes)
+    assert all(keyframe.crop_x == _right_thirds_crop_x() for keyframe in keyframes)
 
 
 def test_dynamic_crop_can_shift_after_persistent_champion_red_bar():

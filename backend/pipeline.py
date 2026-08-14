@@ -292,6 +292,7 @@ class ClipPipeline:
                 player_screen_x_positions,
                 threat_screen_x_positions,
                 crop_settings,
+                trim.fight_start,
             )
             clip_mask = (bundle.timestamps_full >= trim.clip_start) & (bundle.timestamps_full <= trim.clip_end)
             clip_timestamps = bundle.timestamps_full[clip_mask]

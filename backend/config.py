@@ -137,18 +137,20 @@ PLAYER_CENTER_DEADZONE_PX = 45
 PLAYER_THIRDS_DEADZONE_PX = 45
 PLAYER_THIRDS_LOOK_ROOM_PX = _int_env("LOL_CLIP_THIRDS_LOOK_ROOM_PX", 20)
 PLAYER_COMPOSITION = os.environ.get("LOL_CLIP_PLAYER_COMPOSITION", "thirds").strip().lower()
+# When no reliable enemy side is available yet, dynamic thirds composition
+# defaults to giving the player look-room to this side of the vertical crop.
+DYNAMIC_DEFAULT_THIRDS_SIDE = os.environ.get("LOL_CLIP_DYNAMIC_DEFAULT_THIRDS_SIDE", "right").strip().lower()
 THREAT_FRAME_MARGIN_PX = 70
 MINIMAP_UI_AVOID_MARGIN_PX = 30
 # Crop mode:
-#   "dynamic"  - default. For locked camera: starts centered, waits for a
-#                persistent visible enemy side, then reframes with thirds
-#                composition while limiting view changes.
+#   "dynamic"  - default. For locked camera: starts with thirds composition,
+#                then reframes toward persistent visible enemy sides while
+#                limiting view changes.
 #   "static"   - one fixed crop for the whole clip, zero movement.
 CROP_MODE = os.environ.get("LOL_CLIP_CROP_MODE", "dynamic").strip().lower()
 CROP_MODE = CROP_MODE if CROP_MODE in {"dynamic", "static"} else "dynamic"
-# Fixed crop x for static mode and the base position for dynamic mode. Default
-# centers the 810px crop in the 1920px frame, where a locked camera holds the
-# champion.
+# Fixed crop x for static mode and the neutral position dynamic mode uses when
+# center composition is explicitly selected.
 STATIC_CROP_X = int(os.environ.get("LOL_CLIP_STATIC_CROP_X", str((1920 - 810) // 2)))
 # How the crop moves between positions:
 #   "cut" - default. Snaps instantly between held positions, like an editor's
@@ -169,6 +171,9 @@ DYNAMIC_THREAT_HOLD_SEC = float(
 DYNAMIC_MAX_VIEW_CHANGES = int(
     os.environ.get("LOL_CLIP_DYNAMIC_MAX_VIEW_CHANGES", os.environ.get("LOL_CLIP_HYBRID_MAX_VIEW_CHANGES", "3"))
 )
+# Dynamic mode: if the clip includes pre-fight lead-in, seed the opening crop
+# from a threat near the detected fight start so the enemy is visible sooner.
+DYNAMIC_OPENING_LOOKAHEAD_SEC = float(os.environ.get("LOL_CLIP_DYNAMIC_OPENING_LOOKAHEAD_SEC", "3.0"))
 
 MAX_CROP_KEYFRAMES = 61
 KEYFRAME_INTERVAL_SEC = 1.0

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import subprocess
 from fractions import Fraction
 from pathlib import Path
@@ -11,6 +10,7 @@ import aiosqlite
 import pytest
 
 from backend import config
+from backend.ffmpeg_tools import find_executable
 from backend.media_probe import probe_media_profile
 from backend.pipeline import ClipPipeline
 
@@ -20,7 +20,9 @@ def test_sample_clip_pipeline_stages_1_to_6(tmp_path, monkeypatch):
 
 
 async def _run_sample_clip_pipeline_stages_1_to_6(tmp_path, monkeypatch):
-    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+    ffmpeg = find_executable("ffmpeg")
+    ffprobe = find_executable("ffprobe")
+    if ffmpeg is None or ffprobe is None:
         pytest.skip("ffmpeg/ffprobe not installed")
 
     source = config.PROJECT_ROOT / "TestClip.mp4"
@@ -47,7 +49,7 @@ async def _run_sample_clip_pipeline_stages_1_to_6(tmp_path, monkeypatch):
     assert row["output_path"]
 
     probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate", "-of", "json", row["output_path"]],
+        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate", "-of", "json", row["output_path"]],
         check=True,
         capture_output=True,
         text=True,

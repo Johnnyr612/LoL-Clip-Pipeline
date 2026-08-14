@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+
+from .ffmpeg_tools import find_executable
 
 
 class MediaProbeError(ValueError):
@@ -44,7 +45,7 @@ class MediaProfile:
 
 
 def probe_media_profile(path: Path) -> MediaProfile:
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = find_executable("ffprobe")
     if ffprobe is None:
         return MediaProfile(duration=60.0, has_audio=False)
 

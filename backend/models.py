@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_detail TEXT,
     source_path TEXT,
     output_path TEXT,
+    tiktok_publish_id TEXT,
+    tiktok_publish_mode TEXT,
+    tiktok_publish_status TEXT,
+    tiktok_publish_fail_reason TEXT,
     detection_debug TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -91,6 +95,14 @@ async def _ensure_job_columns(db: aiosqlite.Connection) -> None:
         await db.execute("ALTER TABLE jobs ADD COLUMN status_message TEXT DEFAULT ''")
     if "detection_debug" not in columns:
         await db.execute("ALTER TABLE jobs ADD COLUMN detection_debug TEXT NOT NULL DEFAULT '{}'")
+    if "tiktok_publish_id" not in columns:
+        await db.execute("ALTER TABLE jobs ADD COLUMN tiktok_publish_id TEXT")
+    if "tiktok_publish_mode" not in columns:
+        await db.execute("ALTER TABLE jobs ADD COLUMN tiktok_publish_mode TEXT")
+    if "tiktok_publish_status" not in columns:
+        await db.execute("ALTER TABLE jobs ADD COLUMN tiktok_publish_status TEXT")
+    if "tiktok_publish_fail_reason" not in columns:
+        await db.execute("ALTER TABLE jobs ADD COLUMN tiktok_publish_fail_reason TEXT")
 
 
 async def save_tiktok_oauth_state(db_path: Path, state: str) -> None:
@@ -170,7 +182,67 @@ async def save_tiktok_publish_job(db_path: Path, publish_id: str, job_id: str, m
             """,
             (publish_id, job_id, mode, json.dumps(response)),
         )
+        if mode == "inbox":
+            await db.execute(
+                """
+                UPDATE jobs
+                SET tiktok_publish_id=?,
+                    tiktok_publish_mode=?,
+                    tiktok_publish_status='initialized',
+                    tiktok_publish_fail_reason=NULL,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (publish_id, mode, job_id),
+            )
         await db.commit()
+
+
+async def get_tiktok_publish_job(db_path: Path, publish_id: str) -> dict[str, Any] | None:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM tiktok_publish_jobs WHERE publish_id=?", (publish_id,))
+        row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def update_tiktok_publish_status(
+    db_path: Path,
+    publish_id: str,
+    status: str,
+    response: dict[str, Any],
+    fail_reason: str | None = None,
+) -> dict[str, Any] | None:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT job_id, mode FROM tiktok_publish_jobs WHERE publish_id=?", (publish_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        await db.execute(
+            """
+            UPDATE tiktok_publish_jobs
+            SET status=?, response=?, updated_at=CURRENT_TIMESTAMP
+            WHERE publish_id=?
+            """,
+            (status, json.dumps(response), publish_id),
+        )
+        await db.execute(
+            """
+            UPDATE jobs
+            SET tiktok_publish_id=?,
+                tiktok_publish_mode=?,
+                tiktok_publish_status=?,
+                tiktok_publish_fail_reason=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (publish_id, row["mode"], status, fail_reason, row["job_id"]),
+        )
+        await db.commit()
+    return {"job_id": row["job_id"], "mode": row["mode"], "status": status, "fail_reason": fail_reason}
 
 
 async def create_job(db_path: Path, job_id: str, source_path: Path | str) -> None:

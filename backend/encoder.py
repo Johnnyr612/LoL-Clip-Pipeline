@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from . import config
+from .ffmpeg_tools import find_executable
 from .media_probe import MediaProfile
 
 
@@ -299,9 +300,9 @@ class VideoEncoder:
         source_profile: MediaProfile | None = None,
         crop_transition: str | None = None,
     ) -> Path:
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = find_executable("ffmpeg")
         if ffmpeg is None:
-            raise EncoderError("ffmpeg executable not found on PATH")
+            raise EncoderError("ffmpeg executable not found on PATH or in tools/ffmpeg/bin")
         temp_dir = config.TEMP_DIR / job_id
         output_dir = config.OUTPUT_DIR
         temp_dir.mkdir(parents=True, exist_ok=True)

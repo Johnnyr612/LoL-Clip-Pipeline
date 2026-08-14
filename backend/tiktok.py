@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import secrets
 import time
@@ -18,6 +19,10 @@ TIKTOK_CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_i
 TIKTOK_DIRECT_POST_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
 TIKTOK_INBOX_UPLOAD_URL = "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
 TIKTOK_STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
+TIKTOK_STATUS_SUCCESS_INBOX = "SEND_TO_USER_INBOX"
+TIKTOK_STATUS_FAILED = "FAILED"
+TIKTOK_STATUS_MIN_POLL_INTERVAL_SEC = 10.0
+TIKTOK_STATUS_MAX_POLL_SECONDS = 120.0
 
 PostMode = Literal["inbox", "direct"]
 
@@ -202,7 +207,10 @@ async def publish_video(db_path: Path, job_id: str, output_path: Path, options: 
         await _upload_file(client, upload_url, output_path, size, chunk_size, total_chunk_count)
 
     await models.save_tiktok_publish_job(db_path, publish_id, job_id, options.mode, init_payload)
-    return {"publish_id": publish_id, "mode": options.mode, "init": init_payload}
+    result = {"publish_id": publish_id, "mode": options.mode, "init": init_payload}
+    if options.mode == "inbox":
+        result["status"] = "initialized"
+    return result
 
 
 async def fetch_publish_status(db_path: Path, publish_id: str) -> dict[str, Any]:
@@ -216,7 +224,33 @@ async def fetch_publish_status(db_path: Path, publish_id: str) -> dict[str, Any]
             },
             json={"publish_id": publish_id},
         )
-    return _checked_tiktok_response(response)
+    payload = _checked_tiktok_response(response)
+    status = _publish_status_value(payload)
+    fail_reason = _publish_fail_reason(payload)
+    await models.update_tiktok_publish_status(db_path, publish_id, status, payload, fail_reason)
+    return _publish_status_response(publish_id, payload)
+
+
+async def poll_publish_status_until_terminal(
+    db_path: Path,
+    publish_id: str,
+    timeout_sec: float = TIKTOK_STATUS_MAX_POLL_SECONDS,
+) -> dict[str, Any]:
+    start = time.monotonic()
+    interval = TIKTOK_STATUS_MIN_POLL_INTERVAL_SEC
+    last_status: dict[str, Any] | None = None
+    # TODO: Replace polling with a TikTok webhook receiver once this local app has a stable public callback URL.
+    while time.monotonic() - start <= timeout_sec:
+        last_status = await fetch_publish_status(db_path, publish_id)
+        if last_status.get("terminal"):
+            return last_status
+        remaining = timeout_sec - (time.monotonic() - start)
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(interval, remaining))
+        interval = min(30.0, interval * 1.25)
+    timed_out = last_status or {"publish_id": publish_id, "status": "UNKNOWN", "terminal": False, "success": False}
+    return {**timed_out, "status": timed_out.get("status") or "UNKNOWN", "timed_out": True}
 
 
 async def disconnect(db_path: Path) -> None:
@@ -235,6 +269,30 @@ def _upload_shape(size: int) -> tuple[int, int]:
 def _has_scope(scope_text: str, required_scope: str) -> bool:
     scopes = {scope.strip() for scope in scope_text.split(",") if scope.strip()}
     return required_scope in scopes
+
+
+def _publish_status_value(payload: dict[str, Any]) -> str:
+    status = payload.get("data", {}).get("status")
+    return str(status or "UNKNOWN")
+
+
+def _publish_fail_reason(payload: dict[str, Any]) -> str | None:
+    reason = payload.get("data", {}).get("fail_reason")
+    text = str(reason or "").strip()
+    return text or None
+
+
+def _publish_status_response(publish_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    status = _publish_status_value(payload)
+    fail_reason = _publish_fail_reason(payload)
+    return {
+        "publish_id": publish_id,
+        "status": status,
+        "fail_reason": fail_reason,
+        "terminal": status in {TIKTOK_STATUS_SUCCESS_INBOX, TIKTOK_STATUS_FAILED},
+        "success": status == TIKTOK_STATUS_SUCCESS_INBOX,
+        "response": payload,
+    }
 
 
 async def _upload_file(client: httpx.AsyncClient, upload_url: str, path: Path, size: int, chunk_size: int, total_chunks: int) -> None:
