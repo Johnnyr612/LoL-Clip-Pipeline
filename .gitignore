@@ -28,7 +28,8 @@ tools/ffmpeg/
 training_clips/
 
 # Generated training data and labels
-data/training/
+data/training/*
+!data/training/README.md
 
 # Training logs
 training_logs/

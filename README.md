@@ -100,7 +100,7 @@ TikTok's production web Login Kit requires registered `https` redirect URIs. Use
 
 ## Highlight Editing And VideoMAE
 
-The pipeline requires `checkpoints/videomae_lol_highlight_editor.pt`. That model predicts the post-worthy trim directly from the raw one-minute clip: an include/exclude timeline plus phase labels (`exclude`, `buildup`, `fight`, `payoff`). If the highlight editor is missing, cannot load, or does not select an include span, the job fails so the model issue is visible.
+The pipeline requires `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt` by default. That model predicts the post-worthy trim directly from the raw one-minute clip: an include/exclude timeline plus phase labels (`exclude`, `buildup`, `fight`, `payoff`). If the highlight editor is missing, cannot load, or does not select an include span, the job fails so the model issue is visible.
 
 Fine-tuning is handled by `backend/trainer_worker.py`:
 
@@ -173,7 +173,7 @@ Useful follow-up work:
 
 This project includes trained weights and a sample clip through Git LFS:
 
-- `checkpoints/videomae_lol_highlight_editor.pt`: fine-tuned VideoMAE highlight editor.
+- `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt`: default fine-tuned VideoMAE highlight editor.
 - `checkpoints/videomae_lol_best.pt`: legacy fine-tuned VideoMAE fight detector, kept for the optional `--task fight` trainer path.
 - `checkpoints/minimap_yolov8s_best.pt`: YOLOv8 minimap champion detector.
 - `TestClip.mp4`: sample input clip for testing the pipeline.
@@ -325,7 +325,7 @@ Leave `LOL_CLIP_VIDEO_BITRATE` empty to use CRF mode instead. Lower CRF values i
 
 The trained checkpoint files are intentionally tracked with Git LFS so users can run the pipeline without retraining:
 
-- `checkpoints/videomae_lol_highlight_editor.pt`
+- `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt`
 - `checkpoints/videomae_lol_best.pt`
 - `checkpoints/minimap_yolov8s_best.pt`
 
@@ -355,3 +355,15 @@ Run backend tests:
 - `frontend/`: React/Vite dashboard.
 - `data/minimap_icons/`: champion icon source data used by HUD portrait matching.
 - `checkpoints/`: model checkpoints tracked through Git LFS.
+
+## Split-Readiness Docs
+
+Additional architecture and migration notes are available in:
+
+- `docs/PROJECT_SPLIT_PLAN.md`: official app versus trainer/labeler ownership map.
+- `docs/BRANCHING_AND_MIGRATION.md`: branch names, V2 migration order, and checkpoint promotion notes.
+- `backend/README.md`: backend route/module ownership and app isolation notes.
+- `frontend/README.md`: dashboard view ownership and label-review split notes.
+- `data/README.md` and `data/training/README.md`: runtime assets versus private trainer-labeler data.
+- `checkpoints/README.md`: release versus experiment checkpoint policy.
+- `tools/README.md`: training/data-audit script ownership.

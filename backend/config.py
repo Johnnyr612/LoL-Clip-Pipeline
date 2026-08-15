@@ -205,7 +205,7 @@ FFMPEG_AUDIO_BITRATE = os.environ.get("LOL_CLIP_AUDIO_BITRATE", "320k").strip() 
 CROP_QUANTIZE_THRESHOLD = 5
 
 VIDEOMAE_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_best.pt"
-VIDEOMAE_HIGHLIGHT_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_highlight_editor.pt"
+VIDEOMAE_HIGHLIGHT_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_highlight_editor_10ep_3layers.pt"
 HIGHLIGHT_CONTEXT_SECONDS = int(os.environ.get("LOL_CLIP_HIGHLIGHT_CONTEXT_SECONDS", "60"))
 HIGHLIGHT_INPUT_FRAMES = int(os.environ.get("LOL_CLIP_HIGHLIGHT_INPUT_FRAMES", "16"))
 HIGHLIGHT_INCLUDE_THRESHOLD = float(os.environ.get("LOL_CLIP_HIGHLIGHT_INCLUDE_THRESHOLD", "0.50"))
