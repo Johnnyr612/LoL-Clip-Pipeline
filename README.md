@@ -286,6 +286,8 @@ Useful `.env` controls:
 - `LOL_CLIP_DYNAMIC_THREAT_SIDE_TRIGGER_PX=60` controls how far left/right an enemy must be from the player before it counts as a crop direction.
 - `LOL_CLIP_DYNAMIC_THREAT_HOLD_SEC=1.0` controls how long that direction must persist before the crop reframes.
 - `LOL_CLIP_DYNAMIC_MAX_VIEW_CHANGES=3` caps non-center enemy reframes per clip.
+- `LOL_CLIP_DYNAMIC_OPENING_FOCUS_HOLD_SEC=2.0` keeps the fight-start crop framed around the player/enemy pair for the first seconds of combat before normal dynamic framing resumes.
+- `LOL_CLIP_DYNAMIC_PAIR_MIN_PADDING_PX=24` lets the crop use smaller edge padding when a red health bar is approaching the 3:4 view but strict padding would keep the camera centered.
 - `LOL_CLIP_CAMERA_THREAT_SUPPORT_TOLERANCE_PX=170` controls how loosely nearby red health-bar samples are grouped as the same threat.
 
 ## Output Encoding Quality

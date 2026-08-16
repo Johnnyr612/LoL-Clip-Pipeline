@@ -423,6 +423,8 @@ def test_dynamic_crop_switches_right_when_enemy_is_right_of_off_center_player():
 def test_dynamic_crop_seeds_opening_from_fight_start_threat():
     frames = np.zeros((6, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(6, dtype=np.float32)
+    player_sx = 880.0
+    threat_sx = 1010.0
     keyframes = AdaptiveCropper().compute_keyframes(
         frames,
         timestamps,
@@ -431,15 +433,109 @@ def test_dynamic_crop_seeds_opening_from_fight_start_threat():
         [(0.5, 0.5)] * 6,
         [],
         "1v1",
-        [880.0] * 6,
-        [650.0, 650.0, 1010.0, 1010.0, 1010.0, 1010.0],
+        [player_sx] * 6,
+        [None, None, threat_sx, threat_sx, threat_sx, threat_sx],
         CropSettings(mode="dynamic", transition="pan"),
         focus_start=2.0,
     )
 
-    assert keyframes[0].crop_x > config.STATIC_CROP_X
-    assert all(keyframe.crop_x > config.STATIC_CROP_X for keyframe in keyframes[:3])
-    assert config.THREAT_FRAME_MARGIN_PX <= 1010 - keyframes[0].crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
+    expected_crop_x = clamp_crop_x(rule_of_thirds_crop_x(player_sx, threat_sx))
+    assert keyframes[0].crop_x != expected_crop_x
+    assert keyframes[1].crop_x != expected_crop_x
+    assert all(keyframe.crop_x == expected_crop_x for keyframe in keyframes[2:4])
+    assert all(abs((player_sx - keyframe.crop_x) - player_anchor_x(player_sx, threat_sx)) <= 1 for keyframe in keyframes[2:4])
+    assert all(0 <= player_sx - keyframe.crop_x <= config.CROP_W for keyframe in keyframes[2:4])
+    assert all(0 <= threat_sx - keyframe.crop_x <= config.CROP_W for keyframe in keyframes[2:4])
+
+
+def test_dynamic_crop_does_not_apply_future_opening_hint_before_enemy_is_visible():
+    frames = np.zeros((6, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(6, dtype=np.float32)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        5.0,
+        [(0.5, 0.5)] * 6,
+        [],
+        "1v1",
+        [960.0] * 6,
+        [None, None, 650.0, 650.0, 650.0, 650.0],
+        CropSettings(mode="dynamic", transition="cut"),
+        focus_start=2.0,
+    )
+
+    assert keyframes[0].crop_x == _right_thirds_crop_x(960.0)
+    assert keyframes[1].crop_x == _right_thirds_crop_x(960.0)
+    assert keyframes[2].crop_x < config.STATIC_CROP_X
+
+
+def test_dynamic_crop_anticipates_right_side_during_prefight_lead_without_visible_threat():
+    frames = np.zeros((6, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(6, dtype=np.float32)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        5.0,
+        [(0.5, 0.5)] * 6,
+        [],
+        "1v1",
+        [960.0] * 6,
+        [None, None, 1390.0, 1390.0, 1390.0, 1390.0],
+        CropSettings(mode="dynamic", transition="cut"),
+        focus_start=2.0,
+    )
+
+    assert keyframes[0].crop_x == _right_thirds_crop_x(960.0)
+    assert keyframes[1].crop_x == _right_thirds_crop_x(960.0)
+    assert keyframes[2].crop_x > config.STATIC_CROP_X
+
+
+def test_dynamic_crop_follows_visible_prefight_threat_instead_of_empty_look_room():
+    frames = np.zeros((6, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(6, dtype=np.float32)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        5.0,
+        [(0.5, 0.5)] * 6,
+        [],
+        "1v1",
+        [960.0] * 6,
+        [500.0, 500.0, 1390.0, 1390.0, 1390.0, 1390.0],
+        CropSettings(mode="dynamic", transition="cut"),
+        focus_start=2.0,
+    )
+
+    assert keyframes[0].crop_x < config.STATIC_CROP_X
+    assert keyframes[1].crop_x < config.STATIC_CROP_X
+    assert keyframes[2].crop_x > config.STATIC_CROP_X
+
+
+def test_dynamic_crop_seeds_opening_toward_wide_frame_enemy_that_cannot_fully_fit():
+    frames = np.zeros((6, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(6, dtype=np.float32)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        5.0,
+        [(0.5, 0.5)] * 6,
+        [],
+        "1v1",
+        [960.0] * 6,
+        [None, None, 1800.0, 1800.0, 1800.0, 1800.0],
+        CropSettings(mode="dynamic", transition="cut"),
+        focus_start=2.0,
+    )
+
+    default_right_crop_x = _right_thirds_crop_x(960.0)
+    assert keyframes[0].crop_x == default_right_crop_x
+    assert keyframes[1].crop_x == default_right_crop_x
+    assert all(keyframe.crop_x > default_right_crop_x for keyframe in keyframes[2:4])
+    assert all(abs((960 - keyframe.crop_x) - config.THREAT_FRAME_MARGIN_PX) <= 1 for keyframe in keyframes[2:4])
 
 
 def test_dynamic_crop_returns_to_default_thirds_when_enemy_signal_disappears():
@@ -531,6 +627,15 @@ def test_dynamic_crop_does_not_shift_for_enemy_that_cannot_fit():
     crop_x = dynamic_rule_of_thirds_crop_x(960, 1800)
 
     assert crop_x == config.STATIC_CROP_X
+
+
+def test_dynamic_crop_relaxes_padding_for_enemy_approaching_crop_edge():
+    crop_x = dynamic_rule_of_thirds_crop_x(960, 1500)
+
+    assert crop_x > config.STATIC_CROP_X
+    assert 0 <= 960 - crop_x <= config.CROP_W
+    assert 0 <= 1500 - crop_x <= config.CROP_W
+    assert 1500 - crop_x >= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
 
 
 def test_dynamic_crop_uses_rule_of_thirds_when_enemy_fits():

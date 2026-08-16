@@ -50,10 +50,10 @@ type HighlightCheckpointsPayload = {
 };
 
 const defaultTrimSettings: TrimSettingsState = {
-  fight_start_preroll_sec: 1.5,
-  output_context_padding_sec: 1.5,
+  fight_start_preroll_sec: 0.8,
+  output_context_padding_sec: 0.5,
   combat_event_end_padding_sec: 3.0,
-  max_pre_fight_lead_sec: 2.5,
+  max_pre_fight_lead_sec: 1.2,
   min_clip_duration_sec: 20.0,
   model_only: false
 };

@@ -86,7 +86,7 @@ COMBAT_EVENT_MIN_CLIP_DURATION_SEC = float(os.environ.get("LOL_CLIP_MIN_CLIP_SEC
 # Fallback length when no kill/death is confirmed (and floor when
 # CONSERVATIVE_FULL_FIGHT_TRIM is enabled).
 COMBAT_EVENT_TARGET_CLIP_DURATION_SEC = float(os.environ.get("LOL_CLIP_TARGET_CLIP_SEC", "35.0"))
-OUTPUT_CONTEXT_PADDING_SEC = float(os.environ.get("LOL_CLIP_OUTPUT_PADDING_SEC", "1.5"))
+OUTPUT_CONTEXT_PADDING_SEC = float(os.environ.get("LOL_CLIP_OUTPUT_PADDING_SEC", "0.5"))
 COMBAT_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_HEALTHBAR_MIN_WIDTH", "25"))
 COMBAT_HEALTHBAR_MAX_WIDTH = 170
 # Champion health strips are thicker than minion strips at 1920x1080
@@ -115,11 +115,11 @@ FIGHT_ONSET_THRESHOLD = float(os.environ.get("LOL_CLIP_FIGHT_ONSET_THRESHOLD", "
 FIGHT_BOUNDARY_GAP_TOLERANCE_SEC = int(os.environ.get("LOL_CLIP_FIGHT_GAP_TOLERANCE", "3"))
 # Pull the detected fight start back by this many seconds to include the
 # approach/poke phase that windowed scoring inherently misses.
-FIGHT_START_PREROLL_SEC = float(os.environ.get("LOL_CLIP_FIGHT_START_PREROLL", "1.5"))
+FIGHT_START_PREROLL_SEC = float(os.environ.get("LOL_CLIP_FIGHT_START_PREROLL", "0.8"))
 # Hard cap on non-fight lead-in: the clip never starts more than this many
 # seconds before the detected fight start, no matter what dialog extension or
 # padding would otherwise add.
-MAX_PRE_FIGHT_LEAD_SEC = float(os.environ.get("LOL_CLIP_MAX_PRE_FIGHT_LEAD_SEC", "2.5"))
+MAX_PRE_FIGHT_LEAD_SEC = float(os.environ.get("LOL_CLIP_MAX_PRE_FIGHT_LEAD_SEC", "1.2"))
 HEALTHBAR_START_SNAP_SEARCH_SEC = float(os.environ.get("LOL_CLIP_HEALTHBAR_START_SNAP_SEARCH_SEC", "20.0"))
 FIGHT_MIN_DURATION = float(os.environ.get("LOL_CLIP_FIGHT_MIN_DURATION", "4.0"))
 FIGHT_MAX_DURATION = float(os.environ.get("LOL_CLIP_FIGHT_MAX_DURATION", "35.0"))
@@ -141,6 +141,7 @@ PLAYER_COMPOSITION = os.environ.get("LOL_CLIP_PLAYER_COMPOSITION", "thirds").str
 # defaults to giving the player look-room to this side of the vertical crop.
 DYNAMIC_DEFAULT_THIRDS_SIDE = os.environ.get("LOL_CLIP_DYNAMIC_DEFAULT_THIRDS_SIDE", "right").strip().lower()
 THREAT_FRAME_MARGIN_PX = 70
+DYNAMIC_PAIR_MIN_PADDING_PX = int(os.environ.get("LOL_CLIP_DYNAMIC_PAIR_MIN_PADDING_PX", "24"))
 MINIMAP_UI_AVOID_MARGIN_PX = 30
 # Crop mode:
 #   "dynamic"  - default. For locked camera: starts with thirds composition,
@@ -174,6 +175,9 @@ DYNAMIC_MAX_VIEW_CHANGES = int(
 # Dynamic mode: if the clip includes pre-fight lead-in, seed the opening crop
 # from a threat near the detected fight start so the enemy is visible sooner.
 DYNAMIC_OPENING_LOOKAHEAD_SEC = float(os.environ.get("LOL_CLIP_DYNAMIC_OPENING_LOOKAHEAD_SEC", "3.0"))
+# Dynamic mode: keep the fight-start pair framing briefly after first contact
+# before returning to the normal player-safe dynamic camera.
+DYNAMIC_OPENING_FOCUS_HOLD_SEC = float(os.environ.get("LOL_CLIP_DYNAMIC_OPENING_FOCUS_HOLD_SEC", "2.0"))
 
 MAX_CROP_KEYFRAMES = 61
 KEYFRAME_INTERVAL_SEC = 1.0
