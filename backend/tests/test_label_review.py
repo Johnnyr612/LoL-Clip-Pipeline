@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from backend import label_review
 
@@ -173,6 +174,81 @@ def test_public_payload_marks_new_raw_files_as_holdout_candidates(tmp_path, monk
     assert statuses["new-eval.mp4"] == "new_holdout_candidate"
     assert inventory["summary"]["used_for_training"] == 1
     assert inventory["summary"]["new_holdout_candidates"] == 1
+
+
+def test_public_payload_marks_missing_review_files(tmp_path, monkeypatch) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    existing_file = raw_dir / "existing.mp4"
+    existing_file.write_bytes(b"raw")
+    candidates_path = tmp_path / "fight_label_candidates.json"
+    trainer_labels_path = tmp_path / "videomae_labels.json"
+    existing = _pending_record("existing.mp4")
+    existing["raw_path"] = str(existing_file)
+    existing["edit_path"] = ""
+    existing["edit_filename"] = ""
+    missing = _pending_record("missing.mp4")
+    missing["raw_path"] = str(raw_dir / "missing.mp4")
+    missing["edit_path"] = str(raw_dir / "missing-edit.mp4")
+    payload = {
+        "schema_version": 1,
+        "raw_dirs": [str(raw_dir)],
+        "records": [existing, missing],
+        "unmatched_edits": [],
+        "duplicate_raw_stems": [],
+    }
+    candidates_path.write_text(json.dumps(payload), encoding="utf-8")
+    trainer_labels_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
+    monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+
+    result = label_review.get_label_review_payload()
+
+    assert result["records"][0]["raw_exists"] is True
+    assert result["records"][0]["edit_exists"] is False
+    assert result["records"][1]["raw_exists"] is False
+    assert result["records"][1]["edit_exists"] is False
+
+
+def test_label_review_trim_adds_fallback_context_when_model_clip_equals_fight(monkeypatch) -> None:
+    monkeypatch.setattr(label_review.config, "LABEL_REVIEW_PREFIGHT_CONTEXT_SEC", 2.0)
+    monkeypatch.setattr(label_review.config, "LABEL_REVIEW_POSTFIGHT_CONTEXT_SEC", 1.5)
+    trim = SimpleNamespace(
+        clip_start=25.0,
+        clip_end=40.0,
+        fight_start=25.0,
+        fight_end=40.0,
+        flags=["highlight_editor_model"],
+    )
+
+    result = label_review._label_review_trim_with_context(trim, 60.0)
+
+    assert result["clip_start"] == 23.0
+    assert result["clip_end"] == 41.5
+    assert result["fight_start"] == 25.0
+    assert result["fight_end"] == 40.0
+    assert "label_review_context_fallback_applied" in result["flags"]
+
+
+def test_label_review_trim_preserves_model_context(monkeypatch) -> None:
+    monkeypatch.setattr(label_review.config, "LABEL_REVIEW_PREFIGHT_CONTEXT_SEC", 2.0)
+    monkeypatch.setattr(label_review.config, "LABEL_REVIEW_POSTFIGHT_CONTEXT_SEC", 1.5)
+    trim = SimpleNamespace(
+        clip_start=20.0,
+        clip_end=45.0,
+        fight_start=25.0,
+        fight_end=40.0,
+        flags=["highlight_editor_model"],
+    )
+
+    result = label_review._label_review_trim_with_context(trim, 60.0)
+
+    assert result["clip_start"] == 20.0
+    assert result["clip_end"] == 45.0
+    assert result["fight_start"] == 25.0
+    assert result["fight_end"] == 40.0
+    assert result["flags"] == ["highlight_editor_model"]
 
 
 def test_regenerate_trainer_labels_excludes_pending_review_records(tmp_path, monkeypatch) -> None:

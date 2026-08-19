@@ -255,6 +255,41 @@ def _segments_from_fights(
     }
 
 
+def _label_review_trim_with_context(trim: Any, source_duration: float) -> dict[str, Any]:
+    fight_start = _clip(float(trim.fight_start), 0.0, source_duration)
+    fight_end = _clip(float(trim.fight_end), fight_start, source_duration)
+    if fight_end <= fight_start:
+        fight_start = _clip(float(trim.clip_start), 0.0, source_duration)
+        fight_end = _clip(float(trim.clip_end), fight_start, source_duration)
+
+    model_clip_start = _clip(float(trim.clip_start), 0.0, source_duration)
+    model_clip_end = _clip(float(trim.clip_end), model_clip_start, source_duration)
+    missing_context = (
+        abs(model_clip_start - fight_start) <= 0.25
+        and abs(model_clip_end - fight_end) <= 0.25
+    )
+    if missing_context:
+        clip_start = _clip(fight_start - config.LABEL_REVIEW_PREFIGHT_CONTEXT_SEC, 0.0, source_duration)
+        clip_end = _clip(fight_end + config.LABEL_REVIEW_POSTFIGHT_CONTEXT_SEC, clip_start, source_duration)
+    else:
+        clip_start = model_clip_start
+        clip_end = model_clip_end
+    if clip_end <= clip_start:
+        clip_end = _clip(fight_end, clip_start, source_duration)
+
+    flags = list(getattr(trim, "flags", []))
+    if missing_context:
+        flags.append("label_review_context_fallback_applied")
+
+    return {
+        "clip_start": round(float(clip_start), 3),
+        "clip_end": round(float(clip_end), 3),
+        "fight_start": round(float(fight_start), 3),
+        "fight_end": round(float(fight_end), 3),
+        "flags": flags,
+    }
+
+
 def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
     from .fight_detector import FightDetector, HighlightEditorError
     from .frame_io import decode_video
@@ -272,20 +307,21 @@ def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-    fight_segments = [[round(float(trim.fight_start), 3), round(float(trim.fight_end), 3)]]
+    reviewed_trim = _label_review_trim_with_context(trim, float(validation.duration))
+    fight_segments = [[reviewed_trim["fight_start"], reviewed_trim["fight_end"]]]
     return {
         "filename": raw_path.name,
         "raw_path": str(raw_path),
         "edit_path": "",
         "edit_filename": "",
         "raw_duration": round(float(validation.duration), 3),
-        "edit_duration": round(float(trim.clip_end - trim.clip_start), 3),
-        "clip_start": trim.clip_start,
-        "clip_end": trim.clip_end,
-        "fight_start": trim.fight_start,
-        "fight_end": trim.fight_end,
+        "edit_duration": round(float(reviewed_trim["clip_end"] - reviewed_trim["clip_start"]), 3),
+        "clip_start": reviewed_trim["clip_start"],
+        "clip_end": reviewed_trim["clip_end"],
+        "fight_start": reviewed_trim["fight_start"],
+        "fight_end": reviewed_trim["fight_end"],
         "fight_segments": fight_segments,
-        "segments": _segments_from_fights(trim.clip_start, trim.clip_end, fight_segments),
+        "segments": _segments_from_fights(reviewed_trim["clip_start"], reviewed_trim["clip_end"], fight_segments),
         "match": {
             "method": "videomae_highlight_editor",
             "score": None,
@@ -296,7 +332,7 @@ def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
         "skipped": False,
         "review_status": "needs_review",
         "review_note": "Generated from current VideoMAE weights; review before approving for training.",
-        "detector_flags": trim.flags,
+        "detector_flags": reviewed_trim["flags"],
     }
 
 
@@ -469,6 +505,11 @@ def _summary(records: list[dict[str, Any]]) -> dict[str, int]:
 
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     records = payload["records"]
+    for record in records:
+        raw_path = Path(str(record.get("raw_path") or "")).expanduser()
+        edit_path_value = str(record.get("edit_path") or "").strip()
+        record["raw_exists"] = raw_path.is_file() if str(record.get("raw_path") or "").strip() else False
+        record["edit_exists"] = Path(edit_path_value).expanduser().is_file() if edit_path_value else False
     raw_file_inventory = _scan_training_raw_files(payload)
     return {
         "schema_version": payload.get("schema_version", 1),

@@ -70,6 +70,8 @@ type LabelRecord = {
   skipped?: boolean;
   review_status?: string;
   detector_flags?: string[];
+  raw_exists?: boolean;
+  edit_exists?: boolean;
 };
 
 type AddRawFileResult = {
@@ -187,9 +189,9 @@ function statusClass(status: ReviewStatus, active: boolean) {
 
 function rawFileStatusLabel(status: RawTrainingFile["status"]) {
   if (status === "used_for_training") return "Used for training";
-  if (status === "review_queue") return "In review queue";
+  if (status === "review_queue") return "Model review";
   if (status === "skipped") return "Skipped";
-  return "New / eval";
+  return "New raw clip";
 }
 
 function rawFileStatusClass(status: RawTrainingFile["status"]) {
@@ -273,7 +275,7 @@ export function LabelReview() {
 
   async function addRawFileToReview(path: string) {
     setRawActionPath(path);
-    setStatus("Detecting fight clip with current VideoMAE weights...");
+    setStatus("Finding a postable clip with current VideoMAE weights...");
     setError("");
     const response = await fetch("/training/label-review/raw-files", {
       method: "POST",
@@ -283,14 +285,14 @@ export function LabelReview() {
     const result = await response.json().catch(() => null) as AddRawFileResult | null;
     setRawActionPath("");
     if (!response.ok || !result?.payload) {
-      setError((result as any)?.detail ?? "Unable to add raw file to review queue");
+      setError((result as any)?.detail ?? "Unable to run model review for this raw clip");
       setStatus("");
       return;
     }
     setPayload(result.payload);
     setShowNeedsReviewOnly(true);
     setVisiblePosition(visiblePositionFor(result.payload, result.record_index, true));
-    setStatus("Added to review queue with VideoMAE clip boundaries.");
+    setStatus("Added raw clip with VideoMAE annotations for review.");
   }
 
   function updateField(key: "clip_start" | "clip_end" | "review_note", value: string) {
@@ -495,6 +497,8 @@ export function LabelReview() {
   const rawInventory = payload.raw_file_inventory;
   const newRawFiles = rawInventory?.summary.new_holdout_candidates ?? 0;
   const hasEditedReference = Boolean(record.edit_path);
+  const hasRawVideo = record.raw_exists !== false;
+  const rawMissingMessage = "Raw source file not found. Restore this MP4 at the stored path or add the current copy from Raw Video Inventory.";
 
   return (
     <section className="grid gap-4">
@@ -508,7 +512,7 @@ export function LabelReview() {
               <span className="chip chip-neutral">{payload.summary.total} total</span>
               <span className="chip chip-warning">{payload.summary.needs_review} need review</span>
               <span className="chip chip-neutral">{payload.summary.skipped ?? 0} skipped</span>
-              {rawInventory ? <span className="chip chip-active">{newRawFiles} new / eval</span> : null}
+              {rawInventory ? <span className="chip chip-active">{newRawFiles} new raw</span> : null}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -535,9 +539,9 @@ export function LabelReview() {
               <h3 className="text-sm font-semibold">Raw Video Inventory</h3>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="chip chip-active">{rawInventory.summary.new_holdout_candidates} new / eval</span>
+              <span className="chip chip-active">{rawInventory.summary.new_holdout_candidates} new raw</span>
               <span className="chip chip-success">{rawInventory.summary.used_for_training} used for training</span>
-              <span className="chip chip-warning">{rawInventory.summary.review_queue} in review</span>
+              <span className="chip chip-warning">{rawInventory.summary.review_queue} model review</span>
               <span className="chip chip-neutral">{rawInventory.summary.total} scanned</span>
               <button className="button min-h-8 px-2 py-1 text-xs" onClick={() => setRawFilesOpen((value) => !value)} type="button">
                 {rawFilesOpen ? "Collapse" : "Expand"}
@@ -574,7 +578,7 @@ export function LabelReview() {
                             onClick={() => void addRawFileToReview(item.path)}
                             type="button"
                           >
-                            {rawActionPath === item.path ? "Adding..." : "Add to Review"}
+                            {rawActionPath === item.path ? "Finding..." : "Find Clip"}
                           </button>
                         ) : null}
                         {typeof item.record_index === "number" ? (
@@ -619,7 +623,9 @@ export function LabelReview() {
                       <span className="shrink-0 text-[11px] font-semibold uppercase tracking-normal">{statusLabel(state)}</span>
                     </div>
                     <p className="mt-1 truncate font-medium" title={item.filename}>{item.filename}</p>
-                    <p className="mt-0.5 truncate opacity-80" title={item.edit_filename}>{item.edit_filename}</p>
+                    <p className="mt-0.5 truncate opacity-80" title={item.edit_filename || "Model-generated from raw clip"}>
+                      {item.edit_filename || "raw model annotation"}
+                    </p>
                     <p className="mt-1 opacity-80">{item.match.confidence} | {fmt(item.clip_start)}s</p>
                   </button>
                 );
@@ -632,21 +638,29 @@ export function LabelReview() {
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm">
               <div className="min-w-0">
                 <p className="break-all font-semibold">{record.filename}</p>
-                <p className="break-all text-xs text-slate-500 dark:text-slate-400">Edit: {record.edit_filename}</p>
+                <p className="break-all text-xs text-slate-500 dark:text-slate-400">
+                  Edit: {record.edit_filename || "none - model-generated from raw clip"}
+                </p>
                 <p className="break-all text-xs text-slate-500 dark:text-slate-400">Raw: {record.raw_path}</p>
               </div>
               <span className="chip chip-neutral shrink-0">
                 {activePosition + 1} / {visibleIndexes.length} | record {activeIndex + 1}
               </span>
             </div>
-            <video
-              key={`${activeIndex}:${record.raw_path}`}
-              ref={rawVideoRef}
-              className="aspect-video w-full rounded-md bg-black"
-              controls
-              preload="metadata"
-              src={videoUrl(record.raw_path)}
-            />
+            {hasRawVideo ? (
+              <video
+                key={`${activeIndex}:${record.raw_path}`}
+                ref={rawVideoRef}
+                className="aspect-video w-full rounded-md bg-black"
+                controls
+                preload="metadata"
+                src={videoUrl(record.raw_path)}
+              />
+            ) : (
+              <div className="grid aspect-video w-full place-items-center rounded-md border border-danger bg-red-50 p-4 text-center text-sm text-danger dark:bg-red-950/30">
+                {rawMissingMessage}
+              </div>
+            )}
             <div className="mt-3 grid gap-2">
               <div className="relative h-9 overflow-hidden rounded-md bg-slate-200 dark:bg-slate-800">
                 <div className="absolute top-0 h-9 bg-sky-400/50" style={{ left: `${clipLeft}%`, width: `${clipWidth}%` }} />
@@ -662,13 +676,13 @@ export function LabelReview() {
                 ))}
               </div>
               <div className="flex flex-wrap gap-2">
-                <button className="button" onClick={() => previewRawVideo(numberFromField(fields.clip_start))}>
+                <button className="button" disabled={!hasRawVideo} onClick={() => previewRawVideo(numberFromField(fields.clip_start))}>
                   Play Clip Start
                 </button>
-                <button className="button" onClick={() => previewRawVideo(firstFightStart)}>
+                <button className="button" disabled={!hasRawVideo} onClick={() => previewRawVideo(firstFightStart)}>
                   Play Fight Start
                 </button>
-                <button className="button" onClick={() => previewRawVideo(lastFightEnd, 3)}>
+                <button className="button" disabled={!hasRawVideo} onClick={() => previewRawVideo(lastFightEnd, 3)}>
                   Play Fight End
                 </button>
               </div>
@@ -816,7 +830,7 @@ export function LabelReview() {
             <button className="button" onClick={() => move(1)}>
               Next
             </button>
-            <button className="button-primary col-span-2" disabled={detectingFight} onClick={() => void detectFightClip()}>
+            <button className="button-primary col-span-2" disabled={detectingFight || !hasRawVideo} onClick={() => void detectFightClip()}>
               {detectingFight ? "Finding..." : "Find Clip"}
             </button>
             <button className="button-warning" onClick={() => void skipRecord()}>
