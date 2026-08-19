@@ -21,6 +21,7 @@ type RawFileInventory = {
   summary: {
     total: number;
     used_for_training: number;
+    approved_for_training?: number;
     new_holdout_candidates: number;
     review_queue: number;
     skipped: number;
@@ -37,8 +38,9 @@ type RawTrainingFile = {
   source_dir: string;
   size: number;
   modified_at: string;
-  status: "used_for_training" | "new_holdout_candidate" | "review_queue" | "skipped";
+  status: "used_for_training" | "approved_for_training" | "new_holdout_candidate" | "review_queue" | "skipped";
   used_for_training: boolean;
+  approved_for_training?: boolean;
   record_index: number | null;
 };
 
@@ -76,6 +78,11 @@ type LabelRecord = {
 
 type AddRawFileResult = {
   record_index: number;
+  payload: LabelPayload;
+};
+
+type DeleteRecordResult = {
+  deleted_index: number;
   payload: LabelPayload;
 };
 
@@ -172,7 +179,7 @@ function reviewStatus(record: LabelRecord): ReviewStatus {
 }
 
 function statusLabel(status: ReviewStatus) {
-  if (status === "approved") return "Approved";
+  if (status === "approved") return "Train ready";
   if (status === "check") return "Check";
   if (status === "skip") return "Skip";
   return "Review";
@@ -188,14 +195,14 @@ function statusClass(status: ReviewStatus, active: boolean) {
 }
 
 function rawFileStatusLabel(status: RawTrainingFile["status"]) {
-  if (status === "used_for_training") return "Used for training";
+  if (status === "used_for_training" || status === "approved_for_training") return "Approved for training";
   if (status === "review_queue") return "Model review";
   if (status === "skipped") return "Skipped";
   return "New raw clip";
 }
 
 function rawFileStatusClass(status: RawTrainingFile["status"]) {
-  if (status === "used_for_training") return "chip chip-success";
+  if (status === "used_for_training" || status === "approved_for_training") return "chip chip-success";
   if (status === "review_queue") return "chip chip-warning";
   if (status === "skipped") return "chip chip-neutral";
   return "chip chip-active";
@@ -223,6 +230,7 @@ export function LabelReview() {
   const [error, setError] = React.useState("");
   const [rawActionPath, setRawActionPath] = React.useState("");
   const [detectingFight, setDetectingFight] = React.useState(false);
+  const [deletingRecord, setDeletingRecord] = React.useState(false);
   const rawVideoRef = React.useRef<HTMLVideoElement | null>(null);
 
   React.useEffect(() => {
@@ -395,6 +403,43 @@ export function LabelReview() {
       return Math.max(0, Math.min(nextLength - 1, current));
     });
   }
+
+  async function deleteRecord() {
+    if (!record) return;
+    const firstConfirm = window.confirm(
+      `Delete this label entry?\n\n${record.filename}\n\nThis removes it from Label Review and regenerates trainer labels. The raw MP4 file is not deleted.`
+    );
+    if (!firstConfirm) return;
+    const secondConfirm = window.confirm(
+      "Are you sure? This permanently removes the whole annotation record from fight_label_candidates.json and from regenerated videomae_labels.json."
+    );
+    if (!secondConfirm) return;
+
+    setDeletingRecord(true);
+    setStatus("Deleting label entry and regenerating trainer labels...");
+    setError("");
+    const response = await fetch(`/training/label-review/records/${activeIndex}`, {
+      method: "DELETE"
+    });
+    const result = await response.json().catch(() => null) as DeleteRecordResult | null;
+    setDeletingRecord(false);
+    if (!response.ok || !result?.payload) {
+      setError((result as any)?.detail ?? "Unable to delete label entry");
+      setStatus("");
+      return;
+    }
+    setPayload(result.payload);
+    setFields(null);
+    setVisiblePosition((current) => {
+      const nextVisibleIndexes = result.payload.records
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => !showNeedsReviewOnly || (item.needs_review && !item.skipped))
+        .map(({ index }) => index);
+      return Math.max(0, Math.min(current, Math.max(0, nextVisibleIndexes.length - 1)));
+    });
+    setStatus("Deleted label entry and regenerated trainer labels.");
+  }
+
   async function save(approved: boolean) {
     if (!fields || !record) return;
     setStatus(approved ? "Approving label..." : "Saving label...");
@@ -427,7 +472,7 @@ export function LabelReview() {
       records[activeIndex] = result.record;
       return { ...current, records, summary: result.summary };
     });
-    setStatus(approved ? "Approved and trainer labels regenerated." : "Saved and trainer labels regenerated.");
+    setStatus(approved ? "Approved for the next training run and trainer labels regenerated." : "Saved and trainer labels regenerated.");
     if (approved) {
       setVisiblePosition((current) => {
         const nextLength = showNeedsReviewOnly ? Math.max(visibleIndexes.length - 1, 0) : visibleIndexes.length;
@@ -496,6 +541,7 @@ export function LabelReview() {
   const lastFightEnd = fightSegmentValues[fightSegmentValues.length - 1]?.end ?? numberFromField(fields.clip_end);
   const rawInventory = payload.raw_file_inventory;
   const newRawFiles = rawInventory?.summary.new_holdout_candidates ?? 0;
+  const approvedForTraining = rawInventory?.summary.approved_for_training ?? rawInventory?.summary.used_for_training ?? 0;
   const hasEditedReference = Boolean(record.edit_path);
   const hasRawVideo = record.raw_exists !== false;
   const rawMissingMessage = "Raw source file not found. Restore this MP4 at the stored path or add the current copy from Raw Video Inventory.";
@@ -508,7 +554,7 @@ export function LabelReview() {
             <p className="section-kicker">Model training data</p>
             <h2 className="section-title mt-1">Training Label Review</h2>
             <div className="mt-3 flex flex-wrap gap-2">
-              <span className="chip chip-success">{payload.summary.approved} approved</span>
+              <span className="chip chip-success">{payload.summary.approved} approved for training</span>
               <span className="chip chip-neutral">{payload.summary.total} total</span>
               <span className="chip chip-warning">{payload.summary.needs_review} need review</span>
               <span className="chip chip-neutral">{payload.summary.skipped ?? 0} skipped</span>
@@ -540,7 +586,7 @@ export function LabelReview() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="chip chip-active">{rawInventory.summary.new_holdout_candidates} new raw</span>
-              <span className="chip chip-success">{rawInventory.summary.used_for_training} used for training</span>
+              <span className="chip chip-success">{approvedForTraining} approved for training</span>
               <span className="chip chip-warning">{rawInventory.summary.review_queue} model review</span>
               <span className="chip chip-neutral">{rawInventory.summary.total} scanned</span>
               <button className="button min-h-8 px-2 py-1 text-xs" onClick={() => setRawFilesOpen((value) => !value)} type="button">
@@ -830,16 +876,19 @@ export function LabelReview() {
             <button className="button" onClick={() => move(1)}>
               Next
             </button>
-            <button className="button-primary col-span-2" disabled={detectingFight || !hasRawVideo} onClick={() => void detectFightClip()}>
+            <button className="button-primary col-span-2" disabled={detectingFight || deletingRecord || !hasRawVideo} onClick={() => void detectFightClip()}>
               {detectingFight ? "Finding..." : "Find Clip"}
             </button>
-            <button className="button-warning" onClick={() => void skipRecord()}>
+            <button className="button-warning" disabled={deletingRecord} onClick={() => void skipRecord()}>
               Skip
             </button>
-            <button className="button" onClick={() => void save(false)}>
+            <button className="button" disabled={deletingRecord} onClick={() => void save(false)}>
               Save
             </button>
-            <button className="button-primary" onClick={() => void save(true)}>
+            <button className="button-danger" disabled={deletingRecord} onClick={() => void deleteRecord()}>
+              {deletingRecord ? "Deleting..." : "Delete Entry"}
+            </button>
+            <button className="button-primary" disabled={deletingRecord} onClick={() => void save(true)}>
               Approve
             </button>
           </div>

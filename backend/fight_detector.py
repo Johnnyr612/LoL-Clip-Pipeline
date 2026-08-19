@@ -801,6 +801,7 @@ class FightDetector:
         try:
             import torch
             import torch.nn as nn
+            import torch.nn.functional as F
             from transformers import VideoMAEModel
 
             if not resolved_checkpoint.exists():
@@ -810,21 +811,69 @@ class FightDetector:
             context_seconds = int(checkpoint.get("context_seconds", config.HIGHLIGHT_CONTEXT_SECONDS))
             phase_count = len(checkpoint.get("phase_names", ("exclude", "buildup", "fight", "payoff")))
             state_dict = checkpoint.get("model_state", checkpoint)
+            architecture = str(checkpoint.get("architecture") or "").strip()
+            include_weight = state_dict.get("include_head.weight") if isinstance(state_dict, dict) else None
+            if not architecture and include_weight is not None:
+                architecture = (
+                    "pooled_context_head"
+                    if int(include_weight.shape[0]) == context_seconds * 2
+                    else "temporal_token_head"
+                )
             device = torch.device(CUDA_DEVICE_TYPE if torch.cuda.is_available() else "cpu")
+
+            def temporal_video_features(
+                hidden_states: torch.Tensor,
+                pixel_values: torch.Tensor,
+                videomae_config: object,
+            ) -> torch.Tensor:
+                batch_size, sequence_length, hidden_size = hidden_states.shape
+                input_frames = int(pixel_values.shape[1])
+                tubelet_size = int(getattr(videomae_config, "tubelet_size", 2) or 2)
+                temporal_tokens = max(1, input_frames // max(1, tubelet_size))
+                if sequence_length % temporal_tokens != 0:
+                    temporal_tokens = min(input_frames, sequence_length)
+                    while temporal_tokens > 1 and sequence_length % temporal_tokens != 0:
+                        temporal_tokens -= 1
+                spatial_tokens = max(1, sequence_length // max(1, temporal_tokens))
+                usable_tokens = temporal_tokens * spatial_tokens
+                temporal = hidden_states[:, :usable_tokens, :].reshape(
+                    batch_size,
+                    temporal_tokens,
+                    spatial_tokens,
+                    hidden_size,
+                ).mean(dim=2)
+                if temporal_tokens != context_seconds:
+                    temporal = F.interpolate(
+                        temporal.transpose(1, 2),
+                        size=context_seconds,
+                        mode="linear",
+                        align_corners=False,
+                    ).transpose(1, 2)
+                return temporal
 
             class _HighlightEditor(nn.Module):
                 def __init__(self) -> None:
                     super().__init__()
                     self.context_seconds = context_seconds
+                    self.architecture = architecture or "temporal_token_head"
                     self.videomae = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
-                    self.include_head = nn.Linear(768, context_seconds * 2)
-                    self.phase_head = nn.Linear(768, context_seconds * phase_count)
+                    if self.architecture == "pooled_context_head":
+                        self.include_head = nn.Linear(768, context_seconds * 2)
+                        self.phase_head = nn.Linear(768, context_seconds * phase_count)
+                    else:
+                        self.include_head = nn.Linear(768, 2)
+                        self.phase_head = nn.Linear(768, phase_count)
 
                 def forward(self, pixel_values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
                     out = self.videomae(pixel_values=pixel_values)
-                    pooled = out.last_hidden_state.mean(dim=1)
-                    include_logits = self.include_head(pooled).view(-1, context_seconds, 2)
-                    phase_logits = self.phase_head(pooled).view(-1, context_seconds, phase_count)
+                    if self.architecture == "pooled_context_head":
+                        pooled = out.last_hidden_state.mean(dim=1)
+                        include_logits = self.include_head(pooled).view(-1, context_seconds, 2)
+                        phase_logits = self.phase_head(pooled).view(-1, context_seconds, phase_count)
+                        return include_logits, phase_logits
+                    temporal = temporal_video_features(out.last_hidden_state, pixel_values, self.videomae.config)
+                    include_logits = self.include_head(temporal)
+                    phase_logits = self.phase_head(temporal)
                     return include_logits, phase_logits
 
             model = _HighlightEditor().to(device)

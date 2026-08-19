@@ -416,6 +416,38 @@ class VideoMAEClassifier(nn.Module):
         return self.classifier(pooled)
 
 
+def _temporal_video_features(
+    hidden_states: torch.Tensor,
+    pixel_values: torch.Tensor,
+    videomae_config: object,
+    context_seconds: int,
+) -> torch.Tensor:
+    batch_size, sequence_length, hidden_size = hidden_states.shape
+    input_frames = int(pixel_values.shape[1])
+    tubelet_size = int(getattr(videomae_config, "tubelet_size", 2) or 2)
+    temporal_tokens = max(1, input_frames // max(1, tubelet_size))
+    if sequence_length % temporal_tokens != 0:
+        temporal_tokens = min(input_frames, sequence_length)
+        while temporal_tokens > 1 and sequence_length % temporal_tokens != 0:
+            temporal_tokens -= 1
+    spatial_tokens = max(1, sequence_length // max(1, temporal_tokens))
+    usable_tokens = temporal_tokens * spatial_tokens
+    temporal = hidden_states[:, :usable_tokens, :].reshape(
+        batch_size,
+        temporal_tokens,
+        spatial_tokens,
+        hidden_size,
+    ).mean(dim=2)
+    if temporal_tokens != context_seconds:
+        temporal = F.interpolate(
+            temporal.transpose(1, 2),
+            size=context_seconds,
+            mode="linear",
+            align_corners=False,
+        ).transpose(1, 2)
+    return temporal
+
+
 class VideoMAEHighlightEditor(nn.Module):
     def __init__(
         self,
@@ -428,8 +460,8 @@ class VideoMAEHighlightEditor(nn.Module):
         from transformers import VideoMAEModel
 
         self.videomae = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
-        self.include_head = nn.Linear(768, self.context_seconds * 2)
-        self.phase_head = nn.Linear(768, self.context_seconds * len(PHASE_NAMES))
+        self.include_head = nn.Linear(768, 2)
+        self.phase_head = nn.Linear(768, len(PHASE_NAMES))
         if freeze_backbone:
             self._freeze_backbone(max(0, unfreeze_last_n_layers))
 
@@ -452,9 +484,14 @@ class VideoMAEHighlightEditor(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         outputs = self.videomae(pixel_values=pixel_values)
-        pooled = outputs.last_hidden_state.mean(dim=1)
-        include_logits = self.include_head(pooled).view(-1, self.context_seconds, 2)
-        phase_logits = self.phase_head(pooled).view(-1, self.context_seconds, len(PHASE_NAMES))
+        temporal = _temporal_video_features(
+            outputs.last_hidden_state,
+            pixel_values,
+            self.videomae.config,
+            self.context_seconds,
+        )
+        include_logits = self.include_head(temporal)
+        phase_logits = self.phase_head(temporal)
         return include_logits, phase_logits
 
 
@@ -681,7 +718,7 @@ def main() -> int:
             freeze_backbone=args.freeze_backbone,
             unfreeze_last_n_layers=args.unfreeze_last_n_layers,
         ).to(device)
-        checkpoint_path = output_dir / "videomae_lol_highlight_editor.pt"
+        checkpoint_path = output_dir / "videomae_lol_highlight_editor_temporal.pt"
     else:
         model = VideoMAEClassifier(
             freeze_backbone=args.freeze_backbone,
@@ -895,6 +932,7 @@ def main() -> int:
                 torch.save(
                     {
                         "task": "highlight",
+                        "architecture": "temporal_token_head",
                         "context_seconds": HIGHLIGHT_CONTEXT_SECONDS,
                         "input_frames": HIGHLIGHT_INPUT_FRAMES,
                         "phase_names": PHASE_NAMES,

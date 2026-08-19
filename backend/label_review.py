@@ -152,13 +152,13 @@ def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
                 if key in record_indexes
                 else record_indexes.get(filename.lower(), record_indexes.get(stem))
             )
-            used_for_training = (
+            approved_for_training = (
                 key in trainer_path_keys
                 or filename.lower() in trainer_filenames
                 or stem in trainer_stems
             )
-            if used_for_training:
-                status = "used_for_training"
+            if approved_for_training:
+                status = "approved_for_training"
             elif record_index is not None:
                 record = records[record_index]
                 status = "skipped" if record.get("skipped", False) else "review_queue"
@@ -173,7 +173,8 @@ def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
                     "size": stat.st_size,
                     "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                     "status": status,
-                    "used_for_training": used_for_training,
+                    "used_for_training": approved_for_training,
+                    "approved_for_training": approved_for_training,
                     "record_index": record_index,
                 }
             )
@@ -181,7 +182,8 @@ def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
     raw_files.sort(key=lambda item: (item["status"] != "new_holdout_candidate", item["filename"].lower()))
     summary = {
         "total": len(raw_files),
-        "used_for_training": sum(1 for item in raw_files if item["status"] == "used_for_training"),
+        "used_for_training": sum(1 for item in raw_files if item["status"] == "approved_for_training"),
+        "approved_for_training": sum(1 for item in raw_files if item["status"] == "approved_for_training"),
         "new_holdout_candidates": sum(1 for item in raw_files if item["status"] == "new_holdout_candidate"),
         "review_queue": sum(1 for item in raw_files if item["status"] == "review_queue"),
         "skipped": sum(1 for item in raw_files if item["status"] == "skipped"),
@@ -255,41 +257,6 @@ def _segments_from_fights(
     }
 
 
-def _label_review_trim_with_context(trim: Any, source_duration: float) -> dict[str, Any]:
-    fight_start = _clip(float(trim.fight_start), 0.0, source_duration)
-    fight_end = _clip(float(trim.fight_end), fight_start, source_duration)
-    if fight_end <= fight_start:
-        fight_start = _clip(float(trim.clip_start), 0.0, source_duration)
-        fight_end = _clip(float(trim.clip_end), fight_start, source_duration)
-
-    model_clip_start = _clip(float(trim.clip_start), 0.0, source_duration)
-    model_clip_end = _clip(float(trim.clip_end), model_clip_start, source_duration)
-    missing_context = (
-        abs(model_clip_start - fight_start) <= 0.25
-        and abs(model_clip_end - fight_end) <= 0.25
-    )
-    if missing_context:
-        clip_start = _clip(fight_start - config.LABEL_REVIEW_PREFIGHT_CONTEXT_SEC, 0.0, source_duration)
-        clip_end = _clip(fight_end + config.LABEL_REVIEW_POSTFIGHT_CONTEXT_SEC, clip_start, source_duration)
-    else:
-        clip_start = model_clip_start
-        clip_end = model_clip_end
-    if clip_end <= clip_start:
-        clip_end = _clip(fight_end, clip_start, source_duration)
-
-    flags = list(getattr(trim, "flags", []))
-    if missing_context:
-        flags.append("label_review_context_fallback_applied")
-
-    return {
-        "clip_start": round(float(clip_start), 3),
-        "clip_end": round(float(clip_end), 3),
-        "fight_start": round(float(fight_start), 3),
-        "fight_end": round(float(fight_end), 3),
-        "flags": flags,
-    }
-
-
 def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
     from .fight_detector import FightDetector, HighlightEditorError
     from .frame_io import decode_video
@@ -302,26 +269,30 @@ def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
         bundle = decode_video(raw_path, job_id)
         detector = FightDetector()
         try:
-            trim = detector.predict_highlight_trim(bundle.full_frames, bundle.timestamps_full, validation.duration)
+            trim = detector.predict_highlight_trim(
+                bundle.full_frames,
+                bundle.timestamps_full,
+                validation.duration,
+                config.LABEL_REVIEW_HIGHLIGHT_CHECKPOINT,
+            )
         except HighlightEditorError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-    reviewed_trim = _label_review_trim_with_context(trim, float(validation.duration))
-    fight_segments = [[reviewed_trim["fight_start"], reviewed_trim["fight_end"]]]
+    fight_segments = [[round(float(trim.fight_start), 3), round(float(trim.fight_end), 3)]]
     return {
         "filename": raw_path.name,
         "raw_path": str(raw_path),
         "edit_path": "",
         "edit_filename": "",
         "raw_duration": round(float(validation.duration), 3),
-        "edit_duration": round(float(reviewed_trim["clip_end"] - reviewed_trim["clip_start"]), 3),
-        "clip_start": reviewed_trim["clip_start"],
-        "clip_end": reviewed_trim["clip_end"],
-        "fight_start": reviewed_trim["fight_start"],
-        "fight_end": reviewed_trim["fight_end"],
+        "edit_duration": round(float(trim.clip_end - trim.clip_start), 3),
+        "clip_start": trim.clip_start,
+        "clip_end": trim.clip_end,
+        "fight_start": trim.fight_start,
+        "fight_end": trim.fight_end,
         "fight_segments": fight_segments,
-        "segments": _segments_from_fights(reviewed_trim["clip_start"], reviewed_trim["clip_end"], fight_segments),
+        "segments": _segments_from_fights(trim.clip_start, trim.clip_end, fight_segments),
         "match": {
             "method": "videomae_highlight_editor",
             "score": None,
@@ -332,7 +303,10 @@ def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
         "skipped": False,
         "review_status": "needs_review",
         "review_note": "Generated from current VideoMAE weights; review before approving for training.",
-        "detector_flags": reviewed_trim["flags"],
+        "detector_flags": [
+            *trim.flags,
+            f"label_review_checkpoint={config.LABEL_REVIEW_HIGHLIGHT_CHECKPOINT}",
+        ],
     }
 
 
@@ -585,6 +559,23 @@ def skip_label_review_record(index: int) -> dict[str, Any]:
     _write_json(LABEL_CANDIDATES_PATH, payload)
     regenerate_trainer_labels(payload)
     return {"record": record, "summary": _summary(records)}
+
+
+def delete_label_review_record(index: int) -> dict[str, Any]:
+    payload = _load_payload()
+    records = payload["records"]
+    if index < 0 or index >= len(records):
+        raise HTTPException(status_code=404, detail="Label record not found")
+
+    deleted_record = records.pop(index)
+    _write_json(LABEL_CANDIDATES_PATH, payload)
+    trainer_result = regenerate_trainer_labels(payload)
+    return {
+        "deleted_record": deleted_record,
+        "deleted_index": index,
+        "summary": _summary(records),
+        "trainer_labels": trainer_result,
+    }
 
 
 def match_label_review_record(index: int, search_step: float = 0.5) -> dict[str, Any]:

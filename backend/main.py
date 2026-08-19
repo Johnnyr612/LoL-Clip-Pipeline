@@ -23,6 +23,7 @@ from .label_review import (
     AddRawFileRequest,
     LabelReviewUpdate,
     add_raw_file_to_review_queue,
+    delete_label_review_record,
     detect_label_review_record_with_videomae,
     get_label_review_payload,
     match_label_review_record,
@@ -534,6 +535,14 @@ async def update_training_label_review(record_index: int, update: LabelReviewUpd
 @app.post("/training/label-review/records/{record_index}/skip")
 async def skip_training_label_record(record_index: int) -> dict:
     return skip_label_review_record(record_index)
+
+
+@app.delete("/training/label-review/records/{record_index}")
+async def delete_training_label_record(record_index: int) -> dict:
+    result = delete_label_review_record(record_index)
+    return {**result, "payload": get_label_review_payload()}
+
+
 @app.post("/training/label-review/records/{record_index}/match-start")
 async def match_training_label_start(record_index: int) -> dict:
     return match_label_review_record(record_index)
