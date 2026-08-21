@@ -36,6 +36,7 @@ _load_local_env(PROJECT_ROOT / ".env")
 
 MINIMAP_ICONS_DIR = PROJECT_ROOT / "data" / "minimap_icons"
 MANIFEST_PATH = MINIMAP_ICONS_DIR / "champions_manifest.json"
+RAW_CLIP_SOURCE_DIR = Path(os.environ.get("LOL_CLIP_RAW_SOURCE_DIR", r"D:\Medal\Clips\League of Legends")).expanduser()
 
 MINIMAP_CROP_X_PCT = 0.82
 MINIMAP_CROP_Y_PCT = 0.75
@@ -94,6 +95,7 @@ COMBAT_HEALTHBAR_MAX_WIDTH = 170
 # shrinks with remaining health and adjacent minion bars can merge.
 COMBAT_CHAMPION_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CHAMPION_BAR_MIN_WIDTH", "25"))
 COMBAT_CHAMPION_HEALTHBAR_MIN_HEIGHT = int(os.environ.get("LOL_CLIP_CHAMPION_BAR_MIN_HEIGHT", "8"))
+COMBAT_CHAMPION_BADGE_CORE_GLYPH_MIN_PIXELS = int(os.environ.get("LOL_CLIP_CHAMPION_BADGE_CORE_GLYPH_MIN_PIXELS", "6"))
 # Crop steering trusts thick red bars. Width and area are kept as modest noise
 # rejection only, so low-health champions can still steer the crop.
 COMBAT_CAMERA_THREAT_HEALTHBAR_MIN_WIDTH = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_BAR_MIN_WIDTH", "25"))
@@ -104,6 +106,10 @@ COMBAT_CAMERA_THREAT_MIN_SUPPORT_SAMPLES = int(os.environ.get("LOL_CLIP_CAMERA_T
 COMBAT_CAMERA_THREAT_SUPPORT_TOLERANCE_PX = int(os.environ.get("LOL_CLIP_CAMERA_THREAT_SUPPORT_TOLERANCE_PX", "170"))
 COMBAT_HEALTHBAR_IGNORE_LEFT_X_PCT = 0.16
 COMBAT_HEALTHBAR_IGNORE_LEFT_Y_MAX_PCT = 0.72
+COMBAT_HEALTHBAR_IGNORE_CHAT_X_PCT = 0.26
+COMBAT_HEALTHBAR_IGNORE_CHAT_Y_MIN_PCT = 0.54
+COMBAT_HEALTHBAR_IGNORE_MINIMAP_X_PCT = 0.82
+COMBAT_HEALTHBAR_IGNORE_MINIMAP_Y_MIN_PCT = 0.74
 
 FIGHT_CONFIDENCE_THRESHOLD = 0.50
 # Lower threshold used only when walking LEFT from the score peak: the 16s

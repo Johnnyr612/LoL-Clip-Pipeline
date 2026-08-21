@@ -49,6 +49,38 @@ type HighlightCheckpointsPayload = {
   default_checkpoint: string;
 };
 
+type RawFileInventoryPayload = {
+  raw_dirs?: string[];
+  raw_file_inventory?: RawFileInventory;
+};
+
+type RawFileInventory = {
+  summary: {
+    total: number;
+    new_holdout_candidates: number;
+    review_queue: number;
+    approved_for_training?: number;
+    used_for_training?: number;
+    skipped: number;
+    missing_dirs: number;
+  };
+  files: RawTrainingFile[];
+  missing_dirs: string[];
+  duplicate_stems: string[];
+};
+
+type RawTrainingFile = {
+  filename: string;
+  path: string;
+  source_dir: string;
+  size: number;
+  modified_at: string;
+  status: "used_for_training" | "approved_for_training" | "new_holdout_candidate" | "review_queue" | "skipped";
+  used_for_training: boolean;
+  approved_for_training?: boolean;
+  record_index: number | null;
+};
+
 const defaultTrimSettings: TrimSettingsState = {
   fight_start_preroll_sec: 0.8,
   output_context_padding_sec: 0.5,
@@ -170,6 +202,34 @@ function checkpointSummary(checkpoint?: HighlightCheckpoint) {
   return `${activeText} - ${formatFileSize(checkpoint.size)} - ${formatModified(checkpoint.modified_at)}`;
 }
 
+function rawStatusLabel(status: RawTrainingFile["status"]) {
+  if (status === "new_holdout_candidate") return "new";
+  if (status === "review_queue") return "review";
+  if (status === "approved_for_training" || status === "used_for_training") return "training";
+  if (status === "skipped") return "skipped";
+  return status;
+}
+
+function rawStatusChipClass(status: RawTrainingFile["status"]) {
+  if (status === "new_holdout_candidate") return "chip chip-active";
+  if (status === "review_queue") return "chip chip-warning";
+  if (status === "approved_for_training" || status === "used_for_training") return "chip chip-success";
+  if (status === "skipped") return "chip chip-neutral";
+  return "chip chip-neutral";
+}
+
+function tikTokOutputBadge(job?: JobRecord | null) {
+  if (!job?.tiktok_publish_id || job.tiktok_publish_mode !== "inbox") return null;
+  const status = String(job.tiktok_publish_status || "").toUpperCase();
+  if (status === "SEND_TO_USER_INBOX") {
+    return { label: "TikTok sent", className: "chip chip-success" };
+  }
+  if (status === "FAILED") {
+    return { label: "TikTok failed", className: "chip chip-danger" };
+  }
+  return { label: "TikTok sending", className: "chip chip-warning" };
+}
+
 function outputFileToJob(output: OutputFile): JobRecord {
   return {
     id: `output:${output.filename}`,
@@ -206,6 +266,11 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const [selectedCheckpoint, setSelectedCheckpoint] = React.useState("");
   const [outputDir, setOutputDir] = React.useState("");
   const [outputsOpen, setOutputsOpen] = React.useState(true);
+  const [rawFilesOpen, setRawFilesOpen] = React.useState(false);
+  const [rawDirs, setRawDirs] = React.useState<string[]>([]);
+  const [rawInventory, setRawInventory] = React.useState<RawFileInventory | null>(null);
+  const [rawInventoryLoading, setRawInventoryLoading] = React.useState(false);
+  const [rawActionPath, setRawActionPath] = React.useState("");
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [trimSettings, setTrimSettings] = React.useState<TrimSettingsState>(defaultTrimSettings);
   const [cropSettings, setCropSettings] = React.useState<CropSettingsState>({ mode: "dynamic", transition: "cut" });
@@ -269,12 +334,32 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
     });
   }, []);
 
+  const refreshRawInventory = React.useCallback(async () => {
+    setRawInventoryLoading(true);
+    try {
+      const payload = await fetchJsonOr<RawFileInventoryPayload>("/training/label-review", {
+        raw_dirs: [],
+        raw_file_inventory: undefined
+      });
+      setRawDirs(Array.isArray(payload.raw_dirs) ? payload.raw_dirs : []);
+      setRawInventory(payload.raw_file_inventory ?? null);
+    } finally {
+      setRawInventoryLoading(false);
+    }
+  }, []);
+
   React.useEffect(() => {
     void refreshJobs();
     void refreshCheckpoints();
     const timer = window.setInterval(() => void refreshJobs(), 2000);
     return () => window.clearInterval(timer);
   }, [refreshCheckpoints, refreshJobs]);
+
+  React.useEffect(() => {
+    if (rawFilesOpen && !rawInventoryLoading && rawInventory === null) {
+      void refreshRawInventory();
+    }
+  }, [rawFilesOpen, rawInventoryLoading, rawInventory, refreshRawInventory]);
 
   React.useEffect(() => {
     if (!progressJob) {
@@ -311,10 +396,11 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
     return () => window.clearInterval(timer);
   }, [progressJob?.status]);
 
-  async function start(pathOverride?: string) {
+  async function start(pathOverride?: string, addToLabelReview = false) {
     const path = normalizeSourcePath(pathOverride ?? sourcePath);
     setBusy(true);
     setErrorMessage("");
+    if (addToLabelReview) setRawActionPath(path);
     try {
       const response = await fetch("/process", {
         method: "POST",
@@ -324,7 +410,8 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
           trim_settings: trimSettings,
           crop_settings: cropSettings,
           processing_settings: processingSettings,
-          highlight_checkpoint: selectedCheckpoint
+          highlight_checkpoint: selectedCheckpoint,
+          add_to_label_review: addToLabelReview
         })
       });
       const payload = await response.json().catch(() => ({}));
@@ -351,9 +438,19 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
       const next = await fetch(`/jobs/${payload.job_id}`).then((r) => r.json());
       onSelectJob(next);
       await refreshJobs(payload.job_id);
+      if (addToLabelReview) await refreshRawInventory();
     } finally {
+      if (addToLabelReview) setRawActionPath("");
       setBusy(false);
     }
+  }
+
+  async function openFolder(path: string) {
+    await fetch("/settings/open-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path })
+    });
   }
 
   const job = progressJob;
@@ -388,6 +485,95 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
             {"Example: D:\\Medal\\Clips\\League of Legends\\clip.mp4"}
           </span>
         </label>
+        <div className="rounded-md border border-lane bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+          <div className="flex items-center justify-between gap-3">
+            <button
+              aria-expanded={rawFilesOpen}
+              className="text-left text-sm font-semibold text-slate-900 transition hover:text-accent dark:text-slate-100"
+              onClick={() => {
+                setRawFilesOpen((value) => !value);
+                if (!rawFilesOpen) void refreshRawInventory();
+              }}
+              type="button"
+            >
+              Raw Clip Files
+            </button>
+            <button
+              className="button min-h-8 shrink-0 px-2 py-1 text-xs"
+              onClick={() => {
+                setRawFilesOpen((value) => !value);
+                if (!rawFilesOpen) void refreshRawInventory();
+              }}
+              type="button"
+            >
+              {rawFilesOpen ? "Hide" : `Show ${rawInventory?.summary.new_holdout_candidates ?? ""}`.trim()}
+            </button>
+          </div>
+          {rawFilesOpen ? (
+            <div className="mt-3 grid gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  {rawInventory
+                    ? `${rawInventory.summary.new_holdout_candidates} new - ${rawInventory.summary.review_queue} in review`
+                    : rawInventoryLoading ? "Scanning raw folders..." : "No raw inventory loaded"}
+                </span>
+                <button className="button min-h-8 px-2 py-1 text-xs" disabled={rawInventoryLoading} onClick={() => void refreshRawInventory()} type="button">
+                  Refresh
+                </button>
+              </div>
+              {rawDirs.length ? (
+                <div className="grid gap-2">
+                  {rawDirs.map((dir) => (
+                    <div className="flex min-w-0 items-center justify-between gap-2 rounded-md border border-lane bg-white px-2 py-1.5 dark:border-slate-800 dark:bg-slate-900" key={dir}>
+                      <span className="min-w-0 truncate text-xs text-slate-600 dark:text-slate-400">{dir}</span>
+                      <button className="button min-h-7 shrink-0 px-2 py-0.5 text-xs" onClick={() => void openFolder(dir)} type="button">
+                        Open
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {rawInventory?.missing_dirs.length ? (
+                <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                  Missing raw folders: {rawInventory.missing_dirs.join(", ")}
+                </p>
+              ) : null}
+              <div className="grid max-h-72 gap-2 overflow-auto pr-1">
+                {rawInventory?.files.length ? (
+                  rawInventory.files.slice(0, 80).map((file) => (
+                    <div className="grid gap-2 rounded-md border border-lane bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900" key={file.path}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate font-medium">{file.filename}</span>
+                        <span className={rawStatusChipClass(file.status)}>{rawStatusLabel(file.status)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="min-w-0 truncate">{file.source_dir}</span>
+                        <span className="shrink-0">{formatModified(file.modified_at)}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button className="button min-h-8 px-2 py-1 text-xs" onClick={() => setSourcePath(file.path)} type="button">
+                          Select
+                        </button>
+                        <button
+                          className="button-primary min-h-8 px-2 py-1 text-xs"
+                          disabled={busy || !selectedCheckpoint || rawActionPath === file.path}
+                          onClick={() => void start(file.path, true)}
+                          type="button"
+                        >
+                          {rawActionPath === file.path ? "Starting" : file.record_index === null ? "Run + Label" : "Run + Reuse"}
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-md border border-dashed border-lane p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                    {rawInventoryLoading ? "Scanning raw folders..." : "No raw MP4 files found in the configured raw folders."}
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
         <label className="field-label">
           Highlight weights
           <select
@@ -636,6 +822,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
             outputs.map((output) => {
               const matchingJob = jobs.find((item) => item.output_path === output.path || output.filename.startsWith(`${item.id}_`));
               const outputJob = matchingJob ?? outputFileToJob(output);
+              const tikTokBadge = tikTokOutputBadge(matchingJob);
               const isSelected = selectedJob?.id === outputJob.id || (selectedJob?.history_only && selectedJob.output_path === output.path);
               return (
                 <button
@@ -652,7 +839,10 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                     <span className="min-w-0 truncate font-medium">{output.filename}</span>
                     <span className="shrink-0 text-xs text-slate-500 dark:text-slate-400">{matchingJob ? activeJobLabel(matchingJob) : formatFileSize(output.size)}</span>
                   </div>
-                  <span className="truncate text-xs text-slate-500 dark:text-slate-400">{formatModified(output.modified_at)}</span>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <span className="truncate text-xs text-slate-500 dark:text-slate-400">{formatModified(output.modified_at)}</span>
+                    {tikTokBadge ? <span className={`${tikTokBadge.className} min-h-6 px-2 py-0.5`}>{tikTokBadge.label}</span> : null}
+                  </div>
                 </button>
               );
             })

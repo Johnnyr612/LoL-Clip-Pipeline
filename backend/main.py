@@ -227,6 +227,63 @@ def _resolve_output_path(relative_path: str) -> Path:
     return candidate
 
 
+async def _mark_job_label_review_result(job_id: str, result: dict) -> None:
+    job = await models.get_job(config.DB_PATH, job_id)
+    if not job:
+        return
+    try:
+        flags = json.loads(job.get("flags") or "[]")
+    except json.JSONDecodeError:
+        flags = []
+    if not isinstance(flags, list):
+        flags = []
+    label_flag = "label_review_autolabeled" if result.get("created") else "label_review_existing_record"
+    next_flags = [*flags]
+    if label_flag not in next_flags:
+        next_flags.append(label_flag)
+
+    try:
+        detection_debug = json.loads(job.get("detection_debug") or "{}")
+    except json.JSONDecodeError:
+        detection_debug = {}
+    if not isinstance(detection_debug, dict):
+        detection_debug = {}
+    detection_debug["label_review"] = {
+        "record_index": result.get("record_index"),
+        "created": bool(result.get("created")),
+        "status": result.get("record", {}).get("review_status"),
+    }
+    await models.update_job(config.DB_PATH, job_id, flags=next_flags, detection_debug=detection_debug)
+
+
+async def _add_source_to_label_review(job_id: str, source_path: Path, highlight_checkpoint_path: Path) -> None:
+    try:
+        result = await asyncio.to_thread(add_raw_file_to_review_queue, str(source_path), highlight_checkpoint_path)
+    except Exception as exc:  # noqa: BLE001 - background annotation should not overwrite pipeline success.
+        job = await models.get_job(config.DB_PATH, job_id)
+        if not job:
+            return
+        try:
+            flags = json.loads(job.get("flags") or "[]")
+        except json.JSONDecodeError:
+            flags = []
+        if not isinstance(flags, list):
+            flags = []
+        next_flags = [*flags]
+        if "label_review_autolabel_failed" not in next_flags:
+            next_flags.append("label_review_autolabel_failed")
+        try:
+            detection_debug = json.loads(job.get("detection_debug") or "{}")
+        except json.JSONDecodeError:
+            detection_debug = {}
+        if not isinstance(detection_debug, dict):
+            detection_debug = {}
+        detection_debug["label_review"] = {"error": str(exc)}
+        await models.update_job(config.DB_PATH, job_id, flags=next_flags, detection_debug=detection_debug)
+        return
+    await _mark_job_label_review_result(job_id, result)
+
+
 def _stream_video_with_range(video_path: Path, request: Request) -> StreamingResponse:
     file_size = video_path.stat().st_size
     range_header = request.headers.get("range")
@@ -452,6 +509,7 @@ async def process_existing(payload: dict) -> dict:
     crop_settings = CropSettingsRequest(**(payload.get("crop_settings") or {})).to_crop_settings()
     processing_settings = ProcessingSettingsRequest(**(payload.get("processing_settings") or {})).to_processing_settings()
     highlight_checkpoint_path = _resolve_highlight_checkpoint(payload.get("highlight_checkpoint", ""))
+    add_to_label_review = bool(payload.get("add_to_label_review", False))
 
     # Validate input before starting background task
     try:
@@ -476,6 +534,10 @@ async def process_existing(payload: dict) -> dict:
             await asyncio.to_thread(
                 lambda: asyncio.run(pipeline.run(source_path, job_id, trim_settings, highlight_checkpoint_path, crop_settings, processing_settings))
             )
+            if add_to_label_review:
+                completed_job = await models.get_job(config.DB_PATH, job_id)
+                if completed_job and completed_job.get("status") == "complete":
+                    await _add_source_to_label_review(job_id, source_path, highlight_checkpoint_path)
 
     asyncio.create_task(run_background())
 

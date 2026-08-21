@@ -9,6 +9,7 @@ python_requires = ">=3.12"
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 pythonpath = ["."]
+addopts = "--basetemp=.pytest-tmp"
 
 [tool.ruff]
 line-length = 140

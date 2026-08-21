@@ -35,7 +35,7 @@ def _draw_bar(frame: np.ndarray, x1: int, y1: int, x2: int, height: int, color: 
 
 def _draw_player_enemy_bars(frame: np.ndarray) -> None:
     _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
-    _draw_bar(frame, 1000, 300, 1060, THICK_BAR_H, (210, 30, 30))
+    _draw_enemy_champion_bar(frame, 1000, 300, 1060)
 
 
 def _draw_objective_health_number(frame: np.ndarray, x: int, y: int, text: str = "2032") -> None:
@@ -63,6 +63,11 @@ def _draw_champion_level_badge(frame: np.ndarray, x: int, y: int, level: str = "
         1,
         cv2.LINE_AA,
     )
+
+
+def _draw_enemy_champion_bar(frame: np.ndarray, x1: int, y1: int, x2: int, height: int = THICK_BAR_H) -> None:
+    _draw_champion_level_badge(frame, max(0, x1 - 32), y1 + 5)
+    _draw_bar(frame, x1, y1, x2, height, (210, 30, 30))
 
 
 def _right_thirds_crop_x(player_sx: float = 960.0) -> int:
@@ -95,7 +100,7 @@ def test_custom_trim_settings_control_fight_start_preroll():
         TrimSettings(fight_start_preroll_sec=3.0),
     )
 
-    assert default_start == 8.5
+    assert default_start == 9.2
     assert custom_start == 7.0
 
 
@@ -203,8 +208,8 @@ def test_add_output_context_adds_padding_without_moving_fight_markers():
     trim = TrimResult(clip_start=10, clip_end=38, fight_start=12, fight_end=36, fight_duration=24, dialog_segments=[], flags=[])
     result = add_output_context(trim, 60)
 
-    assert result.clip_start == 9.5
-    assert result.clip_end == 39.5
+    assert result.clip_start == 10.8
+    assert result.clip_end == 38.5
     assert result.fight_start == 12
     assert result.fight_end == 36
     assert "output_context_padding_applied" in result.flags
@@ -227,7 +232,7 @@ def test_custom_trim_settings_can_tighten_pre_fight_lead():
     assert "pre_fight_lead_capped" in result.flags
 
 
-def test_highlight_trim_settings_make_tight_and_balanced_distinct():
+def test_highlight_trim_settings_use_current_balanced_defaults():
     frames = np.zeros((60, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(60, dtype=np.float32)
     trim = TrimResult(clip_start=10, clip_end=38, fight_start=12, fight_end=36, fight_duration=24, dialog_segments=[], flags=["highlight_editor_model"])
@@ -249,8 +254,8 @@ def test_highlight_trim_settings_make_tight_and_balanced_distinct():
 
     assert tight.clip_start == 10.8
     assert tight.clip_end == 38.5
-    assert balanced.clip_start == 9.5
-    assert balanced.clip_end == 39.5
+    assert balanced.clip_start == 10.8
+    assert balanced.clip_end == 38.5
 
 
 def test_highlight_trim_settings_can_add_missing_incoming_rewind():
@@ -347,7 +352,7 @@ def test_highlight_trim_does_not_snap_to_single_healthbar_flicker():
         ),
     )
 
-    assert result.clip_start == 2.0
+    assert result.clip_start == 2.8
     assert result.fight_start == 4
     assert "fight_start_snapped_to_healthbar_onset" not in result.flags
 
@@ -395,7 +400,7 @@ def test_estimate_combat_screen_x_positions():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
         _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
-        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1100)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -407,12 +412,47 @@ def test_estimate_combat_screen_x_positions_uses_nearest_red_bar():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
         _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
-        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
-        _draw_bar(frame, 1280, 300, 1380, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1100)
+        _draw_enemy_champion_bar(frame, 1180, 300, 1260)
 
     _player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
     assert threat_positions == [1050.0] * 3
+
+
+def test_estimate_combat_screen_x_positions_uses_edge_enemy_that_needs_framing():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 900, 360, 1020, THICK_BAR_H, (40, 210, 60))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1100)
+        _draw_enemy_champion_bar(frame, 1280, 300, 1380)
+
+    _player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert threat_positions == [1330.0] * 3
+
+
+def test_estimate_combat_screen_x_positions_uses_farther_enemy_for_crop_view():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 900, 360, 1020, THICK_BAR_H, (40, 210, 60))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1100)
+        _draw_enemy_champion_bar(frame, 1450, 300, 1550)
+
+    _player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert threat_positions == [1500.0] * 3
+
+
+def test_estimate_combat_screen_x_positions_uses_visible_edge_enemy_above_player():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 900, 600, 1020, THICK_BAR_H, (40, 210, 60))
+        _draw_enemy_champion_bar(frame, 1600, 150, 1720)
+
+    _player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert threat_positions == [1660.0] * 3
 
 
 def test_estimate_combat_screen_x_positions_ignores_left_hud_bars():
@@ -420,12 +460,37 @@ def test_estimate_combat_screen_x_positions_ignores_left_hud_bars():
     for frame in frames:
         _draw_bar(frame, 190, 220, 300, THICK_BAR_H, (40, 210, 60))
         _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
-        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1100)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
     assert player_positions == [880.0] * 3
     assert threat_positions == [1050.0] * 3
+
+
+def test_estimate_combat_screen_x_positions_ignores_chat_overlay_red_text():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 332, 743, 405, 16, (210, 30, 30))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [None] * 3
+
+
+def test_estimate_combat_screen_x_positions_ignores_minimap_green_as_player():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 1746, 841, 1799, 14, (40, 210, 60))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1100)
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [None] * 3
+    assert threat_positions == [None] * 3
+
 
 def test_minion_red_health_bars_do_not_count_as_visible_enemies():
     frames = np.zeros((4, 1080, 1920, 3), dtype=np.uint8)
@@ -454,7 +519,7 @@ def test_champion_red_health_bar_still_pulls_crop_threat_position():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
         _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
-        _draw_bar(frame, 1000, 300, 1100, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1100)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -479,7 +544,7 @@ def test_blue_ally_health_bars_do_not_beat_red_enemy_for_crop_threat():
     for frame in frames:
         _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
         _draw_bar(frame, 960, 300, 1060, THICK_BAR_H, (30, 120, 230))
-        _draw_bar(frame, 1200, 300, 1320, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frame, 1200, 300, 1320)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -506,7 +571,7 @@ def test_objective_health_number_red_bar_does_not_beat_real_enemy_threat():
         _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
         _draw_bar(frame, 980, 300, 1100, THICK_BAR_H, (210, 30, 30))
         _draw_objective_health_number(frame, 1016, 299)
-        _draw_bar(frame, 1200, 310, 1320, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frame, 1200, 310, 1320)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 
@@ -564,6 +629,18 @@ def test_champion_badge_enemy_bar_beats_nearer_unbadged_red_noise_for_crop_threa
     assert threat_positions == [1260.0] * 3
 
 
+def test_neutral_jungle_monster_bar_does_not_pull_crop_threat_position():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 900, 360, 1020, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 1450, 330, 1580, THICK_BAR_H, (210, 30, 30))
+
+    player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
+
+    assert player_positions == [960.0] * 3
+    assert threat_positions == [None] * 3
+
+
 def test_dynamic_crop_uses_default_thirds_when_only_minion_red_bars_are_visible():
     frames = np.zeros((8, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(8, dtype=np.float32)
@@ -593,7 +670,7 @@ def test_dynamic_crop_can_shift_after_persistent_champion_red_bar():
     timestamps = np.arange(8, dtype=np.float32)
     for idx in range(8):
         _draw_bar(frames[idx], 900, 360, 1020, THICK_BAR_H, (40, 210, 60))
-        _draw_bar(frames[idx], 1200, 300, 1320, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frames[idx], 1200, 300, 1320)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
     keyframes = AdaptiveCropper().compute_keyframes(
@@ -616,7 +693,7 @@ def test_narrow_thick_low_health_champion_bar_pulls_crop_threat_position():
     frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
     for frame in frames:
         _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
-        _draw_bar(frame, 1000, 300, 1044, THICK_BAR_H, (210, 30, 30))
+        _draw_enemy_champion_bar(frame, 1000, 300, 1044)
 
     player_positions, threat_positions = estimate_combat_screen_x_positions(frames)
 

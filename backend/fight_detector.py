@@ -479,7 +479,13 @@ def _has_champion_level_badge(frame: np.ndarray, bar: tuple[int, int, int, int])
     glyph_mask = cv2.bitwise_or(light, yellow)
     dark_fraction = float(np.count_nonzero(dark)) / float(dark.size)
     glyph_pixels = int(np.count_nonzero(glyph_mask))
-    return dark_fraction >= 0.18 and glyph_pixels >= 2
+    badge_core_x2 = max(1, int(glyph_mask.shape[1] * 0.72))
+    core_glyph_pixels = int(np.count_nonzero(glyph_mask[:, :badge_core_x2]))
+    return (
+        dark_fraction >= 0.18
+        and glyph_pixels >= 2
+        and core_glyph_pixels >= config.COMBAT_CHAMPION_BADGE_CORE_GLYPH_MIN_PIXELS
+    )
 
 
 def _champion_ui_bars(
@@ -505,9 +511,9 @@ def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[fl
             continue
         x, _, width, _ = player_bar
         player_positions.append(float(x + (width - 1) / 2))
-        nearby_enemy_bars = _enemy_bars_near_player(red_bars, player_bar)
-        champion_ui_bars = _champion_ui_bars(frame, nearby_enemy_bars)
-        threat_positions.append(_nearest_bar_center_x(champion_ui_bars or nearby_enemy_bars, player_bar))
+        crop_enemy_bars = _enemy_bars_for_crop(red_bars)
+        champion_ui_bars = _champion_ui_bars(frame, crop_enemy_bars)
+        threat_positions.append(_threat_bar_center_x(champion_ui_bars, player_bar))
     return player_positions, _stabilize_sparse_threat_positions(threat_positions)
 
 
@@ -543,6 +549,37 @@ def _nearest_bar_center_x(
     px, py = _bar_center(player_bar)
     nearest = min(bars, key=lambda bar: float(np.linalg.norm(np.array(_bar_center(bar)) - np.array((px, py)))))
     return float(_bar_center(nearest)[0])
+
+
+def _threat_bar_center_x(
+    bars: Sequence[tuple[int, int, int, int]],
+    player_bar: tuple[int, int, int, int],
+) -> float | None:
+    if not bars:
+        return None
+
+    crop_left = float(config.STATIC_CROP_X + config.THREAT_FRAME_MARGIN_PX)
+    crop_right = float(config.STATIC_CROP_X + config.CROP_W - config.THREAT_FRAME_MARGIN_PX)
+    leftmost = min(bars, key=lambda bar: _bar_center(bar)[0])
+    rightmost = max(bars, key=lambda bar: _bar_center(bar)[0])
+    left_pressure = max(0.0, crop_left - float(_bar_center(leftmost)[0]))
+    right_pressure = max(0.0, float(_bar_center(rightmost)[0]) - crop_right)
+
+    if left_pressure > right_pressure:
+        return float(_bar_center(leftmost)[0])
+    if right_pressure > left_pressure:
+        return float(_bar_center(rightmost)[0])
+    if left_pressure > 0:
+        px, _py = _bar_center(player_bar)
+        edge_bar = max((leftmost, rightmost), key=lambda bar: abs(float(_bar_center(bar)[0]) - float(px)))
+        return float(_bar_center(edge_bar)[0])
+
+    return _nearest_bar_center_x(bars, player_bar)
+
+
+def _enemy_bars_for_crop(red_bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    champion_reds = _champion_bars(red_bars)
+    return champion_reds
 
 
 def _mean_bar_center_x(bars: Sequence[tuple[int, int, int, int]]) -> float | None:
@@ -669,9 +706,28 @@ def _filter_side_hud_bars(
     frame_w: int,
     frame_h: int,
 ) -> list[tuple[int, int, int, int]]:
-    max_x = frame_w * config.COMBAT_HEALTHBAR_IGNORE_LEFT_X_PCT
-    max_y = frame_h * config.COMBAT_HEALTHBAR_IGNORE_LEFT_Y_MAX_PCT
-    return [box for box in boxes if not (box[0] < max_x and box[1] < max_y)]
+    return [box for box in boxes if not _is_non_gameplay_healthbar_region(box, frame_w, frame_h)]
+
+
+def _is_non_gameplay_healthbar_region(
+    box: tuple[int, int, int, int],
+    frame_w: int,
+    frame_h: int,
+) -> bool:
+    x, y, _width, _height = box
+    left_hud_max_x = frame_w * config.COMBAT_HEALTHBAR_IGNORE_LEFT_X_PCT
+    left_hud_max_y = frame_h * config.COMBAT_HEALTHBAR_IGNORE_LEFT_Y_MAX_PCT
+    if x < left_hud_max_x and y < left_hud_max_y:
+        return True
+
+    chat_max_x = frame_w * config.COMBAT_HEALTHBAR_IGNORE_CHAT_X_PCT
+    chat_min_y = frame_h * config.COMBAT_HEALTHBAR_IGNORE_CHAT_Y_MIN_PCT
+    if x < chat_max_x and y > chat_min_y:
+        return True
+
+    minimap_min_x = frame_w * config.COMBAT_HEALTHBAR_IGNORE_MINIMAP_X_PCT
+    minimap_min_y = frame_h * config.COMBAT_HEALTHBAR_IGNORE_MINIMAP_Y_MIN_PCT
+    return x > minimap_min_x and y > minimap_min_y
 
 
 def _select_player_health_bar(green_bars: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int] | None:

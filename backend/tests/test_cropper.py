@@ -535,7 +535,7 @@ def test_dynamic_crop_seeds_opening_toward_wide_frame_enemy_that_cannot_fully_fi
     assert keyframes[0].crop_x == default_right_crop_x
     assert keyframes[1].crop_x == default_right_crop_x
     assert all(keyframe.crop_x > default_right_crop_x for keyframe in keyframes[2:4])
-    assert all(abs((960 - keyframe.crop_x) - config.THREAT_FRAME_MARGIN_PX) <= 1 for keyframe in keyframes[2:4])
+    assert all(abs((960 - keyframe.crop_x) - config.PLAYER_SAFE_LEFT_PX) <= 1 for keyframe in keyframes[2:4])
 
 
 def test_dynamic_crop_returns_to_default_thirds_when_enemy_signal_disappears():
@@ -581,7 +581,7 @@ def test_dynamic_crop_holds_shifted_view_while_enemy_remains_visible():
     assert keyframes[-1].crop_x == _right_thirds_crop_x(960.0)
 
 
-def test_dynamic_crop_limits_enemy_side_changes_to_three():
+def test_dynamic_crop_reframes_for_visible_enemies_after_view_change_budget():
     frames = np.zeros((18, 1080, 1920, 3), dtype=np.uint8)
     timestamps = np.arange(18, dtype=np.float32)
     threat_positions = [
@@ -620,13 +620,17 @@ def test_dynamic_crop_limits_enemy_side_changes_to_three():
             side_runs += 1
         current_side = side
 
-    assert side_runs <= config.DYNAMIC_MAX_VIEW_CHANGES + 1
+    assert side_runs > config.DYNAMIC_MAX_VIEW_CHANGES + 1
+    assert keyframes[5].crop_x < config.STATIC_CROP_X
+    assert keyframes[9].crop_x > config.STATIC_CROP_X
+    assert keyframes[13].crop_x < config.STATIC_CROP_X
 
 
-def test_dynamic_crop_does_not_shift_for_enemy_that_cannot_fit():
+def test_dynamic_crop_shifts_best_effort_for_enemy_that_cannot_fit():
     crop_x = dynamic_rule_of_thirds_crop_x(960, 1800)
 
-    assert crop_x == config.STATIC_CROP_X
+    assert crop_x > config.STATIC_CROP_X
+    assert config.PLAYER_SAFE_LEFT_PX <= 960 - crop_x <= config.PLAYER_SAFE_RIGHT_PX
 
 
 def test_dynamic_crop_relaxes_padding_for_enemy_approaching_crop_edge():

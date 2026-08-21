@@ -196,6 +196,7 @@ def test_public_payload_marks_new_raw_files_as_holdout_candidates(tmp_path, monk
 
     monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
     monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+    monkeypatch.setattr(label_review.config, "RAW_CLIP_SOURCE_DIR", raw_dir)
 
     result = label_review.get_label_review_payload()
 
@@ -285,7 +286,7 @@ def test_add_raw_file_to_review_queue_creates_pending_videomae_record(tmp_path, 
     monkeypatch.setattr(
         label_review,
         "_record_from_videomae_detection",
-        lambda path: _pending_record(path.name)
+        lambda path, *_args: _pending_record(path.name)
         | {
             "raw_path": str(path),
             "edit_path": "",
@@ -299,8 +300,48 @@ def test_add_raw_file_to_review_queue_creates_pending_videomae_record(tmp_path, 
     saved_candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
     saved_trainer_labels = json.loads(trainer_labels_path.read_text(encoding="utf-8"))
     assert result["record_index"] == 0
+    assert result["created"] is True
     assert saved_candidates["records"][0]["filename"] == "fresh.mp4"
     assert saved_candidates["records"][0]["needs_review"] is True
     assert saved_candidates["records"][0]["match"]["method"] == "videomae_current_checkpoint"
     assert saved_trainer_labels == []
+
+
+def test_add_raw_file_to_review_queue_reuses_existing_record(tmp_path, monkeypatch) -> None:
+    raw_file = tmp_path / "fresh.mp4"
+    raw_file.write_bytes(b"raw")
+    candidates_path = tmp_path / "fight_label_candidates.json"
+    trainer_labels_path = tmp_path / "videomae_labels.json"
+    payload = {
+        "schema_version": 1,
+        "raw_dirs": [str(tmp_path)],
+        "records": [],
+        "unmatched_edits": [],
+        "duplicate_raw_stems": [],
+    }
+    candidates_path.write_text(json.dumps(payload), encoding="utf-8")
+    trainer_labels_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
+    monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+    monkeypatch.setattr(
+        label_review,
+        "_record_from_videomae_detection",
+        lambda path, *_args: _pending_record(path.name)
+        | {
+            "raw_path": str(path),
+            "edit_path": "",
+            "edit_filename": "",
+            "match": {"method": "videomae_current_checkpoint", "score": 0.8, "confidence": "high"},
+        },
+    )
+
+    first = label_review.add_raw_file_to_review_queue(str(raw_file))
+    second = label_review.add_raw_file_to_review_queue(str(raw_file))
+
+    saved_candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+    assert first["created"] is True
+    assert second["created"] is False
+    assert second["record_index"] == first["record_index"]
+    assert len(saved_candidates["records"]) == 1
 

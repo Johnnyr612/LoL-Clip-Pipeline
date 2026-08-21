@@ -279,6 +279,8 @@ def dynamic_rule_of_thirds_crop_x(
             player_x_in_preferred_crop = float(player_sx) - float(preferred_crop_x)
             if config.PLAYER_SAFE_LEFT_PX <= player_x_in_preferred_crop <= config.PLAYER_SAFE_RIGHT_PX:
                 return float(preferred_crop_x)
+        if threat_sx is not None and _threat_side(player_sx, threat_sx) != 0:
+            return combat_focus_crop_x(player_sx, threat_sx, frame_w, preferred_crop_x)
         return center
     low, high = fit_range
     thirds_target = rule_of_thirds_crop_x(player_sx, threat_sx)
@@ -674,11 +676,16 @@ class AdaptiveCropper:
                 else:
                     candidate_side = side
                     side_streak = 1
+                threat_requires_reframe = composition_threat_sx is not None and not _threat_is_visible(previous_crop_x, composition_threat_sx)
                 if uses_opening_hint and side != committed_side:
                     committed_side = side
                     candidate_side = side
                     side_streak = hold_samples
-                elif side != committed_side and side_streak >= hold_samples and view_changes < config.DYNAMIC_MAX_VIEW_CHANGES:
+                elif (
+                    side != committed_side
+                    and side_streak >= hold_samples
+                    and (view_changes < config.DYNAMIC_MAX_VIEW_CHANGES or threat_requires_reframe)
+                ):
                     committed_side = side
                     if not uses_default_thirds:
                         view_changes += 1
@@ -747,7 +754,7 @@ def _hold_small_crop_changes(values: Sequence[float]) -> list[float]:
 def _trusted_player_sx(player_sx: float | None, locked_player_sx: float) -> float:
     if player_sx is None:
         return float(locked_player_sx)
-    if abs(float(player_sx) - float(locked_player_sx)) > config.CROP_W * 0.45:
+    if abs(float(player_sx) - float(locked_player_sx)) > config.CROP_W * 0.35:
         return float(locked_player_sx)
     return float(player_sx)
 

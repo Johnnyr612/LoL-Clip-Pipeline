@@ -86,6 +86,10 @@ def _raw_dirs_from_payload(payload: dict[str, Any]) -> list[Path]:
     return dirs
 
 
+def _raw_inventory_dirs() -> list[Path]:
+    return [config.RAW_CLIP_SOURCE_DIR]
+
+
 def _trainer_label_keys(labels: list[dict[str, Any]]) -> tuple[set[str], set[str], set[str]]:
     path_keys: set[str] = set()
     filenames: set[str] = set()
@@ -131,7 +135,7 @@ def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
     duplicate_stems: set[str] = set()
     seen_stems: set[str] = set()
 
-    for raw_dir in _raw_dirs_from_payload(payload):
+    for raw_dir in _raw_inventory_dirs():
         if not raw_dir.exists() or not raw_dir.is_dir():
             missing_dirs.append(str(raw_dir))
             continue
@@ -257,12 +261,13 @@ def _segments_from_fights(
     }
 
 
-def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
+def _record_from_videomae_detection(raw_path: Path, highlight_checkpoint_path: Path | None = None) -> dict[str, Any]:
     from .fight_detector import FightDetector, HighlightEditorError
     from .frame_io import decode_video
     from .pipeline import validate_input
 
     validation = validate_input(raw_path)
+    checkpoint_path = highlight_checkpoint_path or config.LABEL_REVIEW_HIGHLIGHT_CHECKPOINT
     job_id = f"label_review_{uuid.uuid4().hex}"
     temp_dir = config.TEMP_DIR / job_id
     try:
@@ -273,7 +278,7 @@ def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
                 bundle.full_frames,
                 bundle.timestamps_full,
                 validation.duration,
-                config.LABEL_REVIEW_HIGHLIGHT_CHECKPOINT,
+                checkpoint_path,
             )
         except HighlightEditorError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -305,7 +310,7 @@ def _record_from_videomae_detection(raw_path: Path) -> dict[str, Any]:
         "review_note": "Generated from current VideoMAE weights; review before approving for training.",
         "detector_flags": [
             *trim.flags,
-            f"label_review_checkpoint={config.LABEL_REVIEW_HIGHLIGHT_CHECKPOINT}",
+            f"label_review_checkpoint={checkpoint_path}",
         ],
     }
 
@@ -487,7 +492,7 @@ def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     raw_file_inventory = _scan_training_raw_files(payload)
     return {
         "schema_version": payload.get("schema_version", 1),
-        "raw_dirs": payload.get("raw_dirs", []),
+        "raw_dirs": [str(path) for path in _raw_inventory_dirs()],
         "edits_dir": payload.get("edits_dir", ""),
         "defaults": payload.get("defaults", {}),
         "summary": _summary(records),
@@ -661,21 +666,27 @@ def validated_video_path(path_value: str) -> Path:
     return path
 
 
-def add_raw_file_to_review_queue(path_value: str) -> dict[str, Any]:
+def add_raw_file_to_review_queue(path_value: str, highlight_checkpoint_path: Path | None = None) -> dict[str, Any]:
     payload = _load_payload()
     records = payload["records"]
     raw_path = validated_video_path(path_value)
     existing_index = _find_record_index(records, raw_path)
     if existing_index is not None:
-        return {"record": records[existing_index], "record_index": existing_index, "summary": _summary(records)}
+        return {
+            "record": records[existing_index],
+            "record_index": existing_index,
+            "created": False,
+            "summary": _summary(records),
+        }
 
-    record = _record_from_videomae_detection(raw_path)
+    record = _record_from_videomae_detection(raw_path, highlight_checkpoint_path)
     records.append(record)
     _write_json(LABEL_CANDIDATES_PATH, payload)
     regenerate_trainer_labels(payload)
     return {
         "record": record,
         "record_index": len(records) - 1,
+        "created": True,
         "summary": _summary(records),
     }
 
