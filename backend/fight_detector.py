@@ -495,11 +495,12 @@ def _champion_ui_bars(
     return [bar for bar in bars if _has_champion_level_badge(frame, bar)]
 
 
-def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[float | None], list[float | None]]:
+def estimate_combat_screen_x_position_tracks(full_frames: np.ndarray) -> tuple[list[float | None], list[float | None], list[float | None]]:
     player_positions: list[float | None] = []
     threat_positions: list[float | None] = []
+    ally_positions: list[float | None] = []
     for frame in full_frames:
-        red_bars, green_bars = _combat_health_bars(frame)
+        red_bars, green_bars, blue_bars = _combat_health_bar_groups(frame)
         red_bars = _exclude_objective_health_bars(frame, _camera_threat_bars(red_bars))
         player_bar = _select_player_health_bar(green_bars)
         if player_bar is None:
@@ -508,13 +509,24 @@ def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[fl
             # crop toward them. Report no threat instead.
             player_positions.append(None)
             threat_positions.append(None)
+            ally_positions.append(None)
             continue
         x, _, width, _ = player_bar
         player_positions.append(float(x + (width - 1) / 2))
         crop_enemy_bars = _enemy_bars_for_crop(red_bars)
         champion_ui_bars = _champion_ui_bars(frame, crop_enemy_bars)
         threat_positions.append(_threat_bar_center_x(champion_ui_bars, player_bar))
-    return player_positions, _stabilize_sparse_threat_positions(threat_positions)
+        ally_positions.append(_ally_bar_center_x(_ally_bars_for_crop(blue_bars), player_bar))
+    return (
+        player_positions,
+        _stabilize_sparse_threat_positions(threat_positions),
+        _stabilize_sparse_threat_positions(ally_positions),
+    )
+
+
+def estimate_combat_screen_x_positions(full_frames: np.ndarray) -> tuple[list[float | None], list[float | None]]:
+    player_positions, threat_positions, _ally_positions = estimate_combat_screen_x_position_tracks(full_frames)
+    return player_positions, threat_positions
 
 
 def _stabilize_sparse_threat_positions(values: list[float | None]) -> list[float | None]:
@@ -580,6 +592,31 @@ def _threat_bar_center_x(
 def _enemy_bars_for_crop(red_bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
     champion_reds = _champion_bars(red_bars)
     return champion_reds
+
+
+def _ally_bars_for_crop(blue_bars: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    return _champion_bars(blue_bars)
+
+
+def _ally_bar_center_x(
+    bars: Sequence[tuple[int, int, int, int]],
+    player_bar: tuple[int, int, int, int],
+) -> float | None:
+    if not bars:
+        return None
+    px, _py = _bar_center(player_bar)
+    crop_left = float(config.STATIC_CROP_X + config.THREAT_FRAME_MARGIN_PX)
+    crop_right = float(config.STATIC_CROP_X + config.CROP_W - config.THREAT_FRAME_MARGIN_PX)
+    leftmost = min(bars, key=lambda bar: _bar_center(bar)[0])
+    rightmost = max(bars, key=lambda bar: _bar_center(bar)[0])
+    left_pressure = max(0.0, crop_left - float(_bar_center(leftmost)[0]))
+    right_pressure = max(0.0, float(_bar_center(rightmost)[0]) - crop_right)
+
+    if left_pressure > right_pressure:
+        return float(_bar_center(leftmost)[0])
+    if right_pressure > left_pressure:
+        return float(_bar_center(rightmost)[0])
+    return float(_bar_center(max((leftmost, rightmost), key=lambda bar: abs(float(_bar_center(bar)[0]) - float(px))))[0])
 
 
 def _mean_bar_center_x(bars: Sequence[tuple[int, int, int, int]]) -> float | None:
@@ -664,17 +701,24 @@ def _detect_combat_event_time(
 
 
 def _combat_health_bars(frame: np.ndarray) -> tuple[list[tuple[int, int, int, int]], list[tuple[int, int, int, int]]]:
+    red_bars, green_bars, _blue_bars = _combat_health_bar_groups(frame)
+    return red_bars, green_bars
+
+
+def _combat_health_bar_groups(
+    frame: np.ndarray,
+) -> tuple[list[tuple[int, int, int, int]], list[tuple[int, int, int, int]], list[tuple[int, int, int, int]]]:
     h, w = frame.shape[:2]
     roi_y1, roi_y2 = int(h * 0.08), int(h * 0.82)
     roi_x1, roi_x2 = int(w * 0.02), int(w * 0.96)
     roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
-    # Crop steering intentionally only trusts the local player (green) and
-    # enemies (red). Ally-blue bars are left unmasked so they cannot move view.
     red_mask = _mask_color(roi, "red")
     green_mask = _mask_color(roi, "green")
+    blue_mask = _mask_color(roi, "blue")
     red_bars = _filter_side_hud_bars(_health_bar_boxes(red_mask, roi_x1, roi_y1), w, h)
     green_bars = _filter_side_hud_bars(_health_bar_boxes(green_mask, roi_x1, roi_y1), w, h)
-    return red_bars, green_bars
+    blue_bars = _filter_side_hud_bars(_health_bar_boxes(blue_mask, roi_x1, roi_y1), w, h)
+    return red_bars, green_bars, blue_bars
 
 
 def _mask_color(roi: np.ndarray, color: str) -> np.ndarray:
@@ -683,6 +727,8 @@ def _mask_color(roi: np.ndarray, color: str) -> np.ndarray:
         mask1 = cv2.inRange(hsv, (0, 80, 90), (12, 255, 255))
         mask2 = cv2.inRange(hsv, (168, 80, 90), (180, 255, 255))
         return cv2.bitwise_or(mask1, mask2)
+    if color == "blue":
+        return cv2.inRange(hsv, (95, 60, 70), (130, 255, 255))
     return cv2.inRange(hsv, (35, 70, 80), (90, 255, 255))
 
 

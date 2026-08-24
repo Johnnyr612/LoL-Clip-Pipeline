@@ -125,11 +125,25 @@ def _find_record_index(records: list[dict[str, Any]], raw_path: Path) -> int | N
     return indexes.get(key, indexes.get(filename, indexes.get(stem)))
 
 
-def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
+def _usage_keys(raw_file_usage: dict[str, str] | None) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    for raw_path, status in (raw_file_usage or {}).items():
+        path = Path(str(raw_path or "")).expanduser()
+        normalized_status = str(status or "").strip()
+        if normalized_status not in {"posted_to_tiktok", "sent_to_inbox"}:
+            continue
+        for key in (_path_key(path), path.name.lower(), path.stem.lower()):
+            if key and key not in keys:
+                keys[key] = normalized_status
+    return keys
+
+
+def _scan_training_raw_files(payload: dict[str, Any], raw_file_usage: dict[str, str] | None = None) -> dict[str, Any]:
     records = payload.get("records", [])
     records = records if isinstance(records, list) else []
     trainer_path_keys, trainer_filenames, trainer_stems = _trainer_label_keys(_load_trainer_labels())
     record_indexes = _record_index_by_raw_path(records)
+    blocked_usage = _usage_keys(raw_file_usage)
     raw_files: list[dict[str, Any]] = []
     missing_dirs: list[str] = []
     duplicate_stems: set[str] = set()
@@ -163,6 +177,8 @@ def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
             )
             if approved_for_training:
                 status = "approved_for_training"
+            elif key in blocked_usage or filename.lower() in blocked_usage or stem in blocked_usage:
+                status = blocked_usage.get(key) or blocked_usage.get(filename.lower()) or blocked_usage.get(stem)
             elif record_index is not None:
                 record = records[record_index]
                 status = "skipped" if record.get("skipped", False) else "review_queue"
@@ -191,6 +207,8 @@ def _scan_training_raw_files(payload: dict[str, Any]) -> dict[str, Any]:
         "new_holdout_candidates": sum(1 for item in raw_files if item["status"] == "new_holdout_candidate"),
         "review_queue": sum(1 for item in raw_files if item["status"] == "review_queue"),
         "skipped": sum(1 for item in raw_files if item["status"] == "skipped"),
+        "posted_to_tiktok": sum(1 for item in raw_files if item["status"] == "posted_to_tiktok"),
+        "sent_to_inbox": sum(1 for item in raw_files if item["status"] == "sent_to_inbox"),
         "missing_dirs": len(missing_dirs),
     }
     return {
@@ -482,14 +500,14 @@ def _summary(records: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _public_payload(payload: dict[str, Any], raw_file_usage: dict[str, str] | None = None) -> dict[str, Any]:
     records = payload["records"]
     for record in records:
         raw_path = Path(str(record.get("raw_path") or "")).expanduser()
         edit_path_value = str(record.get("edit_path") or "").strip()
         record["raw_exists"] = raw_path.is_file() if str(record.get("raw_path") or "").strip() else False
         record["edit_exists"] = Path(edit_path_value).expanduser().is_file() if edit_path_value else False
-    raw_file_inventory = _scan_training_raw_files(payload)
+    raw_file_inventory = _scan_training_raw_files(payload, raw_file_usage)
     return {
         "schema_version": payload.get("schema_version", 1),
         "raw_dirs": [str(path) for path in _raw_inventory_dirs()],
@@ -503,8 +521,8 @@ def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def get_label_review_payload() -> dict[str, Any]:
-    return _public_payload(_load_payload())
+def get_label_review_payload(raw_file_usage: dict[str, str] | None = None) -> dict[str, Any]:
+    return _public_payload(_load_payload(), raw_file_usage)
 
 
 def save_label_review_record(index: int, update: LabelReviewUpdate) -> dict[str, Any]:
@@ -666,18 +684,27 @@ def validated_video_path(path_value: str) -> Path:
     return path
 
 
-def add_raw_file_to_review_queue(path_value: str, highlight_checkpoint_path: Path | None = None) -> dict[str, Any]:
+def add_raw_file_to_review_queue(
+    path_value: str,
+    highlight_checkpoint_path: Path | None = None,
+    raw_file_usage: dict[str, str] | None = None,
+) -> dict[str, Any]:
     payload = _load_payload()
     records = payload["records"]
     raw_path = validated_video_path(path_value)
+    blocked_usage = _usage_keys(raw_file_usage)
+    raw_usage = (
+        blocked_usage.get(_path_key(raw_path))
+        or blocked_usage.get(raw_path.name.lower())
+        or blocked_usage.get(raw_path.stem.lower())
+    )
+    if raw_usage == "sent_to_inbox":
+        raise HTTPException(status_code=409, detail="Raw file was already sent to the TikTok inbox")
+    if raw_usage == "posted_to_tiktok":
+        raise HTTPException(status_code=409, detail="Raw file was already posted to TikTok")
     existing_index = _find_record_index(records, raw_path)
     if existing_index is not None:
-        return {
-            "record": records[existing_index],
-            "record_index": existing_index,
-            "created": False,
-            "summary": _summary(records),
-        }
+        raise HTTPException(status_code=409, detail="Raw file is already in the review or training set")
 
     record = _record_from_videomae_detection(raw_path, highlight_checkpoint_path)
     records.append(record)

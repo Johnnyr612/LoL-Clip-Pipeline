@@ -345,3 +345,38 @@ async def list_jobs(db_path: Path, limit: int = 50) -> list[dict[str, Any]]:
         )
         rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def list_tiktok_source_usages(db_path: Path) -> dict[str, str]:
+    await init_db(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT
+                jobs.source_path,
+                COALESCE(tiktok_publish_jobs.mode, jobs.tiktok_publish_mode) AS mode,
+                COALESCE(tiktok_publish_jobs.status, jobs.tiktok_publish_status) AS publish_status
+            FROM jobs
+            LEFT JOIN tiktok_publish_jobs ON tiktok_publish_jobs.job_id = jobs.id
+            WHERE jobs.source_path IS NOT NULL
+              AND (
+                tiktok_publish_jobs.publish_id IS NOT NULL
+                OR jobs.tiktok_publish_id IS NOT NULL
+              )
+            """
+        )
+        rows = await cursor.fetchall()
+
+    usages: dict[str, str] = {}
+    for row in rows:
+        source_path = str(row["source_path"] or "").strip()
+        if not source_path:
+            continue
+        publish_status = str(row["publish_status"] or "").strip().upper()
+        if publish_status == "FAILED":
+            continue
+        mode = str(row["mode"] or "").strip().lower()
+        usage = "sent_to_inbox" if mode == "inbox" else "posted_to_tiktok"
+        usages[source_path] = usage
+    return usages

@@ -25,6 +25,8 @@ type RawFileInventory = {
     new_holdout_candidates: number;
     review_queue: number;
     skipped: number;
+    posted_to_tiktok?: number;
+    sent_to_inbox?: number;
     missing_dirs: number;
   };
   files: RawTrainingFile[];
@@ -38,7 +40,14 @@ type RawTrainingFile = {
   source_dir: string;
   size: number;
   modified_at: string;
-  status: "used_for_training" | "approved_for_training" | "new_holdout_candidate" | "review_queue" | "skipped";
+  status:
+    | "used_for_training"
+    | "approved_for_training"
+    | "new_holdout_candidate"
+    | "review_queue"
+    | "skipped"
+    | "posted_to_tiktok"
+    | "sent_to_inbox";
   used_for_training: boolean;
   approved_for_training?: boolean;
   record_index: number | null;
@@ -196,6 +205,8 @@ function statusClass(status: ReviewStatus, active: boolean) {
 
 function rawFileStatusLabel(status: RawTrainingFile["status"]) {
   if (status === "used_for_training" || status === "approved_for_training") return "Approved for training";
+  if (status === "posted_to_tiktok") return "Posted to TikTok";
+  if (status === "sent_to_inbox") return "Sent to inbox";
   if (status === "review_queue") return "Model review";
   if (status === "skipped") return "Skipped";
   return "New raw clip";
@@ -203,6 +214,7 @@ function rawFileStatusLabel(status: RawTrainingFile["status"]) {
 
 function rawFileStatusClass(status: RawTrainingFile["status"]) {
   if (status === "used_for_training" || status === "approved_for_training") return "chip chip-success";
+  if (status === "posted_to_tiktok" || status === "sent_to_inbox") return "chip chip-success";
   if (status === "review_queue") return "chip chip-warning";
   if (status === "skipped") return "chip chip-neutral";
   return "chip chip-active";

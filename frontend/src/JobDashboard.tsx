@@ -62,6 +62,8 @@ type RawFileInventory = {
     approved_for_training?: number;
     used_for_training?: number;
     skipped: number;
+    posted_to_tiktok?: number;
+    sent_to_inbox?: number;
     missing_dirs: number;
   };
   files: RawTrainingFile[];
@@ -75,7 +77,14 @@ type RawTrainingFile = {
   source_dir: string;
   size: number;
   modified_at: string;
-  status: "used_for_training" | "approved_for_training" | "new_holdout_candidate" | "review_queue" | "skipped";
+  status:
+    | "used_for_training"
+    | "approved_for_training"
+    | "new_holdout_candidate"
+    | "review_queue"
+    | "skipped"
+    | "posted_to_tiktok"
+    | "sent_to_inbox";
   used_for_training: boolean;
   approved_for_training?: boolean;
   record_index: number | null;
@@ -206,6 +215,8 @@ function rawStatusLabel(status: RawTrainingFile["status"]) {
   if (status === "new_holdout_candidate") return "new";
   if (status === "review_queue") return "review";
   if (status === "approved_for_training" || status === "used_for_training") return "training";
+  if (status === "posted_to_tiktok") return "posted";
+  if (status === "sent_to_inbox") return "inbox";
   if (status === "skipped") return "skipped";
   return status;
 }
@@ -214,8 +225,13 @@ function rawStatusChipClass(status: RawTrainingFile["status"]) {
   if (status === "new_holdout_candidate") return "chip chip-active";
   if (status === "review_queue") return "chip chip-warning";
   if (status === "approved_for_training" || status === "used_for_training") return "chip chip-success";
+  if (status === "posted_to_tiktok" || status === "sent_to_inbox") return "chip chip-success";
   if (status === "skipped") return "chip chip-neutral";
   return "chip chip-neutral";
+}
+
+function canSelectRawFile(file: RawTrainingFile) {
+  return file.status === "new_holdout_candidate";
 }
 
 function tikTokOutputBadge(job?: JobRecord | null) {
@@ -293,6 +309,10 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
           return Date.parse(a.created_at || "") - Date.parse(b.created_at || "");
         }),
     [jobs]
+  );
+  const selectableRawFiles = React.useMemo(
+    () => rawInventory?.files.filter(canSelectRawFile) ?? [],
+    [rawInventory]
   );
 
   const refreshJobs = React.useCallback(
@@ -461,7 +481,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
   const displayElapsed = elapsed || durationFromJob(job);
 
   return (
-    <aside className="surface-panel max-h-[calc(100vh-7rem)] self-start overflow-y-auto overscroll-contain p-4 pr-3 lg:sticky lg:top-24">
+    <aside className="surface-panel max-h-[calc(100vh-7rem)] min-w-0 self-start overflow-y-auto overflow-x-hidden overscroll-contain p-4 pr-3 lg:sticky lg:top-24">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="section-kicker">Pipeline control</p>
@@ -485,7 +505,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
             {"Example: D:\\Medal\\Clips\\League of Legends\\clip.mp4"}
           </span>
         </label>
-        <div className="rounded-md border border-lane bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+        <div className="min-w-0 overflow-hidden rounded-md border border-lane bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
           <div className="flex items-center justify-between gap-3">
             <button
               aria-expanded={rawFilesOpen}
@@ -506,15 +526,15 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
               }}
               type="button"
             >
-              {rawFilesOpen ? "Hide" : `Show ${rawInventory?.summary.new_holdout_candidates ?? ""}`.trim()}
+              {rawFilesOpen ? "Hide" : `Show ${selectableRawFiles.length || ""}`.trim()}
             </button>
           </div>
           {rawFilesOpen ? (
             <div className="mt-3 grid gap-3">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center justify-between gap-2">
                 <span className="text-xs text-slate-500 dark:text-slate-400">
                   {rawInventory
-                    ? `${rawInventory.summary.new_holdout_candidates} new - ${rawInventory.summary.review_queue} in review`
+                    ? `${selectableRawFiles.length} new available`
                     : rawInventoryLoading ? "Scanning raw folders..." : "No raw inventory loaded"}
                 </span>
                 <button className="button min-h-8 px-2 py-1 text-xs" disabled={rawInventoryLoading} onClick={() => void refreshRawInventory()} type="button">
@@ -522,9 +542,9 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                 </button>
               </div>
               {rawDirs.length ? (
-                <div className="grid gap-2">
+                <div className="grid min-w-0 gap-2">
                   {rawDirs.map((dir) => (
-                    <div className="flex min-w-0 items-center justify-between gap-2 rounded-md border border-lane bg-white px-2 py-1.5 dark:border-slate-800 dark:bg-slate-900" key={dir}>
+                    <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden rounded-md border border-lane bg-white px-2 py-1.5 dark:border-slate-800 dark:bg-slate-900" key={dir}>
                       <span className="min-w-0 truncate text-xs text-slate-600 dark:text-slate-400">{dir}</span>
                       <button className="button min-h-7 shrink-0 px-2 py-0.5 text-xs" onClick={() => void openFolder(dir)} type="button">
                         Open
@@ -538,36 +558,42 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                   Missing raw folders: {rawInventory.missing_dirs.join(", ")}
                 </p>
               ) : null}
-              <div className="grid max-h-72 gap-2 overflow-auto pr-1">
-                {rawInventory?.files.length ? (
-                  rawInventory.files.slice(0, 80).map((file) => (
-                    <div className="grid gap-2 rounded-md border border-lane bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900" key={file.path}>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 truncate font-medium">{file.filename}</span>
+              <div className="grid max-h-80 min-w-0 gap-2 overflow-y-auto overflow-x-hidden pr-1">
+                {selectableRawFiles.length ? (
+                  selectableRawFiles.slice(0, 80).map((file) => (
+                    <div className="grid min-h-[96px] min-w-0 gap-2 overflow-hidden rounded-md border border-lane bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900" key={file.path}>
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <span className="min-w-0 truncate font-medium" title={file.filename}>{file.filename}</span>
                         <span className={rawStatusChipClass(file.status)}>{rawStatusLabel(file.status)}</span>
                       </div>
-                      <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-                        <span className="min-w-0 truncate">{file.source_dir}</span>
+                      <div className="grid min-w-0 gap-1 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="min-w-0 truncate" title={file.source_dir}>{file.source_dir}</span>
                         <span className="shrink-0">{formatModified(file.modified_at)}</span>
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button className="button min-h-8 px-2 py-1 text-xs" onClick={() => setSourcePath(file.path)} type="button">
+                      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
+                        <button
+                          className="button min-h-8 px-2 py-1 text-xs"
+                          onClick={() => setSourcePath(file.path)}
+                          title="Select this raw clip"
+                          type="button"
+                        >
                           Select
                         </button>
                         <button
                           className="button-primary min-h-8 px-2 py-1 text-xs"
                           disabled={busy || !selectedCheckpoint || rawActionPath === file.path}
                           onClick={() => void start(file.path, true)}
+                          title="Run and add this new raw clip to label review"
                           type="button"
                         >
-                          {rawActionPath === file.path ? "Starting" : file.record_index === null ? "Run + Label" : "Run + Reuse"}
+                          {rawActionPath === file.path ? "Starting" : "Run + Label"}
                         </button>
                       </div>
                     </div>
                   ))
                 ) : (
                   <p className="rounded-md border border-dashed border-lane p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
-                    {rawInventoryLoading ? "Scanning raw folders..." : "No raw MP4 files found in the configured raw folders."}
+                    {rawInventoryLoading ? "Scanning raw folders..." : "No new raw MP4 files are available."}
                   </p>
                 )}
               </div>
@@ -816,8 +842,8 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
             {outputsOpen ? "Hide" : `Show ${outputs.length}`}
           </button>
         </div>
-        {outputsOpen && outputDir ? <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">{outputDir}</p> : null}
-        {outputsOpen ? <div className="mt-3 grid max-h-80 gap-2 overflow-auto pr-1">
+        {outputsOpen && outputDir ? <p className="mt-1 min-w-0 truncate text-xs text-slate-500 dark:text-slate-400" title={outputDir}>{outputDir}</p> : null}
+        {outputsOpen ? <div className="mt-3 grid max-h-80 min-w-0 gap-2 overflow-y-auto overflow-x-hidden pr-1">
           {outputs.length ? (
             outputs.map((output) => {
               const matchingJob = jobs.find((item) => item.output_path === output.path || output.filename.startsWith(`${item.id}_`));
@@ -827,7 +853,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
               return (
                 <button
                   key={output.path}
-                  className={`grid rounded-md border px-3 py-2 text-left text-sm transition ${
+                  className={`grid min-w-0 gap-1 overflow-hidden rounded-md border px-3 py-2 text-left text-sm transition ${
                     isSelected
                       ? "border-accent bg-blue-50 shadow-sm dark:bg-blue-950/30"
                       : "border-lane bg-white hover:border-accent hover:shadow-sm dark:border-slate-800 dark:bg-slate-950"
@@ -835,12 +861,12 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
                   onClick={() => onSelectJob(outputJob)}
                   type="button"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate font-medium">{output.filename}</span>
+                  <div className="grid min-w-0 gap-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-2">
+                    <span className="min-w-0 truncate font-medium" title={output.filename}>{output.filename}</span>
                     <span className="shrink-0 text-xs text-slate-500 dark:text-slate-400">{matchingJob ? activeJobLabel(matchingJob) : formatFileSize(output.size)}</span>
                   </div>
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <span className="truncate text-xs text-slate-500 dark:text-slate-400">{formatModified(output.modified_at)}</span>
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <span className="min-w-0 truncate text-xs text-slate-500 dark:text-slate-400">{formatModified(output.modified_at)}</span>
                     {tikTokBadge ? <span className={`${tikTokBadge.className} min-h-6 px-2 py-0.5`}>{tikTokBadge.label}</span> : null}
                   </div>
                 </button>

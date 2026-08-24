@@ -15,6 +15,7 @@ from backend.cropper import (
     enforce_center_preference,
     enforce_safe_zone,
     include_threat_in_crop,
+    maximize_champion_inclusion_crop_x,
     player_anchor_x,
     rule_of_thirds_crop_x,
     smooth_crop_values,
@@ -576,8 +577,8 @@ def test_dynamic_crop_holds_shifted_view_while_enemy_remains_visible():
     )
 
     assert keyframes[3].crop_x > config.STATIC_CROP_X
-    assert keyframes[4].crop_x == keyframes[3].crop_x
-    assert keyframes[5].crop_x == keyframes[3].crop_x
+    assert keyframes[4].crop_x < keyframes[3].crop_x
+    assert keyframes[5].crop_x == keyframes[4].crop_x
     assert keyframes[-1].crop_x == _right_thirds_crop_x(960.0)
 
 
@@ -647,6 +648,56 @@ def test_dynamic_crop_uses_rule_of_thirds_when_enemy_fits():
 
     assert abs((960 - crop_x) - player_anchor_x(960, 1390)) <= config.PLAYER_THIRDS_DEADZONE_PX
     assert config.THREAT_FRAME_MARGIN_PX <= 1390 - crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
+
+
+def test_dynamic_crop_centers_close_combat_cluster():
+    crop_x = dynamic_rule_of_thirds_crop_x(960, 1120)
+    cluster_center = (960 + 1120) / 2
+
+    assert crop_x < _right_thirds_crop_x(960)
+    assert abs((crop_x + config.CROP_W / 2) - cluster_center) <= 1
+    assert config.PLAYER_SAFE_LEFT_PX <= 960 - crop_x <= config.PLAYER_SAFE_RIGHT_PX
+    assert config.THREAT_FRAME_MARGIN_PX <= 1120 - crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
+
+
+def test_dynamic_crop_includes_ally_when_enemy_stays_visible():
+    base_crop_x = dynamic_rule_of_thirds_crop_x(960, 1260)
+    crop_x = maximize_champion_inclusion_crop_x(base_crop_x, 960, 1260, 580)
+
+    assert crop_x < base_crop_x
+    assert 0 <= 580 - crop_x <= config.CROP_W
+    assert config.THREAT_FRAME_MARGIN_PX <= 1260 - crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
+    assert config.PLAYER_SAFE_LEFT_PX <= 960 - crop_x <= config.PLAYER_SAFE_RIGHT_PX
+
+
+def test_dynamic_crop_does_not_include_ally_by_losing_enemy():
+    base_crop_x = dynamic_rule_of_thirds_crop_x(960, 1500)
+    crop_x = maximize_champion_inclusion_crop_x(base_crop_x, 960, 1500, 420)
+
+    assert crop_x == base_crop_x
+    assert config.THREAT_FRAME_MARGIN_PX <= 1500 - crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX
+
+
+def test_dynamic_keyframes_shift_for_ally_without_dropping_single_enemy():
+    frames = np.zeros((5, 1080, 1920, 3), dtype=np.uint8)
+    timestamps = np.arange(5, dtype=np.float32)
+    keyframes = AdaptiveCropper().compute_keyframes(
+        frames,
+        timestamps,
+        0.0,
+        4.0,
+        [(0.5, 0.5)] * 5,
+        [],
+        "2v1",
+        [960.0] * 5,
+        [1260.0] * 5,
+        CropSettings(mode="dynamic", transition="cut"),
+        ally_screen_x_positions=[580.0] * 5,
+    )
+
+    assert all(keyframe.crop_x < dynamic_rule_of_thirds_crop_x(960, 1260) for keyframe in keyframes)
+    assert all(0 <= 580 - keyframe.crop_x <= config.CROP_W for keyframe in keyframes)
+    assert all(config.THREAT_FRAME_MARGIN_PX <= 1260 - keyframe.crop_x <= config.CROP_W - config.THREAT_FRAME_MARGIN_PX for keyframe in keyframes)
 
 
 def test_combat_focus_centers_player_when_threat_already_fits():

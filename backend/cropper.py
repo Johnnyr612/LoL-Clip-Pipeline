@@ -264,6 +264,53 @@ def _visible_pair_crop_range(
     return low, high
 
 
+def combat_cluster_crop_x(
+    player_sx: float,
+    threat_sx: float | None,
+    frame_w: int = 1920,
+) -> float:
+    if threat_sx is None:
+        return combat_focus_crop_x(player_sx, threat_sx, frame_w)
+    fit_range = _visible_threat_crop_range(player_sx, threat_sx, frame_w)
+    if fit_range is None:
+        return combat_focus_crop_x(player_sx, threat_sx, frame_w)
+    low, high = fit_range
+    cluster_center = (float(player_sx) + float(threat_sx)) / 2
+    preferred = cluster_center - config.CROP_W / 2
+    return float(np.clip(preferred, low, high))
+
+
+def maximize_champion_inclusion_crop_x(
+    crop_x: float,
+    player_sx: float,
+    threat_sx: float | None,
+    ally_sx: float | None,
+    frame_w: int = 1920,
+) -> float:
+    if ally_sx is None:
+        return crop_x
+    base_range = _visible_threat_crop_range(player_sx, threat_sx, frame_w) if threat_sx is not None else _player_safe_crop_range(player_sx, frame_w)
+    if base_range is None:
+        return crop_x
+
+    margin = max(0.0, min(float(config.THREAT_FRAME_MARGIN_PX), float(config.DYNAMIC_PAIR_MIN_PADDING_PX)))
+    ally_low = float(ally_sx) - (config.CROP_W - margin)
+    ally_high = float(ally_sx) - margin
+    frame_low = 0.0
+    frame_high = max(0.0, float(frame_w - config.CROP_W))
+    low = max(float(base_range[0]), ally_low, frame_low)
+    high = min(float(base_range[1]), ally_high, frame_high)
+    if low > high:
+        return crop_x
+
+    champion_positions = [float(player_sx), float(ally_sx)]
+    if threat_sx is not None:
+        champion_positions.append(float(threat_sx))
+    cluster_center = (min(champion_positions) + max(champion_positions)) / 2
+    preferred = cluster_center - config.CROP_W / 2
+    return float(np.clip(preferred, low, high))
+
+
 def dynamic_rule_of_thirds_crop_x(
     player_sx: float,
     threat_sx: float | None,
@@ -283,6 +330,8 @@ def dynamic_rule_of_thirds_crop_x(
             return combat_focus_crop_x(player_sx, threat_sx, frame_w, preferred_crop_x)
         return center
     low, high = fit_range
+    if threat_sx is not None and abs(float(threat_sx) - float(player_sx)) <= config.DYNAMIC_CLUSTER_CENTER_TRIGGER_PX:
+        return combat_cluster_crop_x(player_sx, threat_sx, frame_w)
     thirds_target = rule_of_thirds_crop_x(player_sx, threat_sx)
     preferred = thirds_target if preferred_crop_x is None else float(preferred_crop_x)
     return float(np.clip(preferred, low, high))
@@ -548,6 +597,7 @@ class AdaptiveCropper:
         threat_screen_x_positions: Sequence[float | None] | None = None,
         crop_settings: CropSettings | None = None,
         focus_start: float | None = None,
+        ally_screen_x_positions: Sequence[float | None] | None = None,
     ) -> list[CropKeyframe]:
         frame_h, frame_w = frames.shape[1:3]
         settings = crop_settings or CropSettings()
@@ -567,6 +617,7 @@ class AdaptiveCropper:
                 timestamps,
                 stabilize_screen_positions(player_screen_x_positions),
                 stabilize_screen_positions(threat_screen_x_positions),
+                stabilize_screen_positions(ally_screen_x_positions),
                 frame_w,
                 transition,
                 focus_start,
@@ -578,6 +629,7 @@ class AdaptiveCropper:
         timestamps: np.ndarray,
         player_series: list[float | None] | None,
         threat_series: list[float | None] | None,
+        ally_series: list[float | None] | None,
         frame_w: int,
         transition: str,
         focus_start: float | None = None,
@@ -597,6 +649,7 @@ class AdaptiveCropper:
         raw_targets: list[float] = []
         player_targets: list[float] = []
         threat_targets: list[float | None] = []
+        ally_targets: list[float | None] = []
         best_effort_targets: list[bool] = []
         opening_hint = _opening_threat_hint(key_times, timestamps, player_series, threat_series, locked_player_sx, frame_w, focus_start)
         opening_side = _opening_thirds_side(key_times, timestamps, player_series, threat_series, locked_player_sx, frame_w, focus_start, opening_hint)
@@ -610,6 +663,9 @@ class AdaptiveCropper:
             )
             threat_sx = windowed_median(
                 threat_series, timestamps, timestamp_f, config.PLAYER_SX_MEDIAN_WINDOW_SEC
+            )
+            ally_sx = windowed_median(
+                ally_series, timestamps, timestamp_f, config.PLAYER_SX_MEDIAN_WINDOW_SEC
             )
             uses_opening_hint = (
                 opening_hint is not None
@@ -693,6 +749,7 @@ class AdaptiveCropper:
             active_threat_sx = composition_threat_sx if committed_side != 0 and side == committed_side else None
             player_targets.append(composition_player_sx)
             threat_targets.append(active_threat_sx)
+            ally_targets.append(ally_sx)
             preferred_crop_x = previous_crop_x if keep_committed_view else None
             best_effort = uses_opening_hint and active_threat_sx is not None
             best_effort_targets.append(best_effort)
@@ -700,6 +757,7 @@ class AdaptiveCropper:
                 target = opening_fight_focus_crop_x(composition_player_sx, active_threat_sx, frame_w)
             else:
                 target = dynamic_rule_of_thirds_crop_x(composition_player_sx, active_threat_sx, frame_w, preferred_crop_x)
+            target = maximize_champion_inclusion_crop_x(target, composition_player_sx, active_threat_sx, ally_sx, frame_w)
             target = avoid_minimap_ui(target, composition_player_sx, frame_w, active_threat_sx)
             raw_targets.append(float(np.clip(target, 0, frame_w - config.CROP_W)))
 
@@ -708,11 +766,12 @@ class AdaptiveCropper:
         else:
             positioned = _hold_small_crop_changes(raw_targets)
         finalized: list[int] = []
-        for value, player_sx, threat_sx, best_effort in zip(positioned, player_targets, threat_targets, best_effort_targets):
+        for value, player_sx, threat_sx, ally_sx, best_effort in zip(positioned, player_targets, threat_targets, ally_targets, best_effort_targets):
             if best_effort:
                 value = opening_fight_focus_crop_x(player_sx, threat_sx, frame_w)
             else:
                 value = dynamic_rule_of_thirds_crop_x(player_sx, threat_sx, frame_w, value)
+            value = maximize_champion_inclusion_crop_x(value, player_sx, threat_sx, ally_sx, frame_w)
             value = avoid_minimap_ui(value, player_sx, frame_w, threat_sx)
             finalized.append(clamp_crop_x(value, frame_w))
         return [CropKeyframe(float(t), int(x)) for t, x in zip(key_times, finalized)]

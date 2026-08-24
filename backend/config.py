@@ -169,6 +169,9 @@ CROP_TRANSITION = os.environ.get("LOL_CLIP_CROP_TRANSITION", "cut").strip().lowe
 DYNAMIC_THREAT_SIDE_TRIGGER_PX = int(
     os.environ.get("LOL_CLIP_DYNAMIC_THREAT_SIDE_TRIGGER_PX", os.environ.get("LOL_CLIP_HYBRID_SIDE_TRIGGER_PX", "60"))
 )
+# Dynamic mode: if player/threat detections are this close horizontally, center
+# the combat cluster instead of keeping a thirds composition with empty space.
+DYNAMIC_CLUSTER_CENTER_TRIGGER_PX = int(os.environ.get("LOL_CLIP_DYNAMIC_CLUSTER_CENTER_TRIGGER_PX", "320"))
 # Dynamic mode: how long the same enemy side must persist before the camera
 # reframes. Missing threats recenter immediately after filtering.
 DYNAMIC_THREAT_HOLD_SEC = float(

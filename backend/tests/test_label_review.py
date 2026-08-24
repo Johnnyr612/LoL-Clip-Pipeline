@@ -209,6 +209,48 @@ def test_public_payload_marks_new_raw_files_as_holdout_candidates(tmp_path, monk
     assert inventory["summary"]["new_holdout_candidates"] == 1
 
 
+def test_public_payload_marks_tiktok_used_raw_files_as_unselectable(tmp_path, monkeypatch) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    inbox_file = raw_dir / "sent.mp4"
+    posted_file = raw_dir / "posted.mp4"
+    new_file = raw_dir / "new.mp4"
+    inbox_file.write_bytes(b"inbox")
+    posted_file.write_bytes(b"posted")
+    new_file.write_bytes(b"new")
+    candidates_path = tmp_path / "fight_label_candidates.json"
+    trainer_labels_path = tmp_path / "videomae_labels.json"
+    payload = {
+        "schema_version": 1,
+        "raw_dirs": [str(raw_dir)],
+        "records": [],
+        "unmatched_edits": [],
+        "duplicate_raw_stems": [],
+    }
+    candidates_path.write_text(json.dumps(payload), encoding="utf-8")
+    trainer_labels_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
+    monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+    monkeypatch.setattr(label_review.config, "RAW_CLIP_SOURCE_DIR", raw_dir)
+
+    result = label_review.get_label_review_payload(
+        {
+            str(inbox_file): "sent_to_inbox",
+            str(posted_file): "posted_to_tiktok",
+        }
+    )
+
+    inventory = result["raw_file_inventory"]
+    statuses = {item["filename"]: item["status"] for item in inventory["files"]}
+    assert statuses["sent.mp4"] == "sent_to_inbox"
+    assert statuses["posted.mp4"] == "posted_to_tiktok"
+    assert statuses["new.mp4"] == "new_holdout_candidate"
+    assert inventory["summary"]["sent_to_inbox"] == 1
+    assert inventory["summary"]["posted_to_tiktok"] == 1
+    assert inventory["summary"]["new_holdout_candidates"] == 1
+
+
 def test_public_payload_marks_missing_review_files(tmp_path, monkeypatch) -> None:
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
@@ -307,7 +349,7 @@ def test_add_raw_file_to_review_queue_creates_pending_videomae_record(tmp_path, 
     assert saved_trainer_labels == []
 
 
-def test_add_raw_file_to_review_queue_reuses_existing_record(tmp_path, monkeypatch) -> None:
+def test_add_raw_file_to_review_queue_rejects_existing_record(tmp_path, monkeypatch) -> None:
     raw_file = tmp_path / "fresh.mp4"
     raw_file.write_bytes(b"raw")
     candidates_path = tmp_path / "fight_label_candidates.json"
@@ -337,11 +379,41 @@ def test_add_raw_file_to_review_queue_reuses_existing_record(tmp_path, monkeypat
     )
 
     first = label_review.add_raw_file_to_review_queue(str(raw_file))
-    second = label_review.add_raw_file_to_review_queue(str(raw_file))
 
     saved_candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
     assert first["created"] is True
-    assert second["created"] is False
-    assert second["record_index"] == first["record_index"]
     assert len(saved_candidates["records"]) == 1
+    try:
+        label_review.add_raw_file_to_review_queue(str(raw_file))
+    except label_review.HTTPException as exc:
+        assert exc.status_code == 409
+        assert "already in the review or training set" in exc.detail
+    else:
+        raise AssertionError("Expected duplicate raw file to be rejected")
 
+
+def test_add_raw_file_to_review_queue_rejects_tiktok_used_file(tmp_path, monkeypatch) -> None:
+    raw_file = tmp_path / "posted.mp4"
+    raw_file.write_bytes(b"raw")
+    candidates_path = tmp_path / "fight_label_candidates.json"
+    trainer_labels_path = tmp_path / "videomae_labels.json"
+    payload = {
+        "schema_version": 1,
+        "raw_dirs": [str(tmp_path)],
+        "records": [],
+        "unmatched_edits": [],
+        "duplicate_raw_stems": [],
+    }
+    candidates_path.write_text(json.dumps(payload), encoding="utf-8")
+    trainer_labels_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(label_review, "LABEL_CANDIDATES_PATH", candidates_path)
+    monkeypatch.setattr(label_review, "TRAINER_LABELS_PATH", trainer_labels_path)
+
+    try:
+        label_review.add_raw_file_to_review_queue(str(raw_file), raw_file_usage={str(raw_file): "posted_to_tiktok"})
+    except label_review.HTTPException as exc:
+        assert exc.status_code == 409
+        assert "already posted to TikTok" in exc.detail
+    else:
+        raise AssertionError("Expected TikTok-used raw file to be rejected")

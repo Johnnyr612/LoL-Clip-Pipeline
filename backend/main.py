@@ -258,7 +258,8 @@ async def _mark_job_label_review_result(job_id: str, result: dict) -> None:
 
 async def _add_source_to_label_review(job_id: str, source_path: Path, highlight_checkpoint_path: Path) -> None:
     try:
-        result = await asyncio.to_thread(add_raw_file_to_review_queue, str(source_path), highlight_checkpoint_path)
+        raw_file_usage = await models.list_tiktok_source_usages(config.DB_PATH)
+        result = await asyncio.to_thread(add_raw_file_to_review_queue, str(source_path), highlight_checkpoint_path, raw_file_usage)
     except Exception as exc:  # noqa: BLE001 - background annotation should not overwrite pipeline success.
         job = await models.get_job(config.DB_PATH, job_id)
         if not job:
@@ -282,6 +283,10 @@ async def _add_source_to_label_review(job_id: str, source_path: Path, highlight_
         await models.update_job(config.DB_PATH, job_id, flags=next_flags, detection_debug=detection_debug)
         return
     await _mark_job_label_review_result(job_id, result)
+
+
+async def _label_review_payload_with_usage() -> dict:
+    return get_label_review_payload(await models.list_tiktok_source_usages(config.DB_PATH))
 
 
 def _stream_video_with_range(video_path: Path, request: Request) -> StreamingResponse:
@@ -573,18 +578,19 @@ async def train_stream() -> StreamingResponse:
 
 @app.get("/training/label-review")
 async def training_label_review() -> dict:
-    return get_label_review_payload()
+    return await _label_review_payload_with_usage()
 
 
 @app.post("/training/label-review/refresh-files")
 async def refresh_training_label_files() -> dict:
-    return get_label_review_payload()
+    return await _label_review_payload_with_usage()
 
 
 @app.post("/training/label-review/raw-files")
 async def add_training_raw_file(req: AddRawFileRequest) -> dict:
-    result = await asyncio.to_thread(add_raw_file_to_review_queue, req.path)
-    return {**result, "payload": get_label_review_payload()}
+    raw_file_usage = await models.list_tiktok_source_usages(config.DB_PATH)
+    result = await asyncio.to_thread(add_raw_file_to_review_queue, req.path, None, raw_file_usage)
+    return {**result, "payload": await _label_review_payload_with_usage()}
 
 
 @app.post("/training/label-review/records/{record_index}")
@@ -602,7 +608,7 @@ async def skip_training_label_record(record_index: int) -> dict:
 @app.delete("/training/label-review/records/{record_index}")
 async def delete_training_label_record(record_index: int) -> dict:
     result = delete_label_review_record(record_index)
-    return {**result, "payload": get_label_review_payload()}
+    return {**result, "payload": await _label_review_payload_with_usage()}
 
 
 @app.post("/training/label-review/records/{record_index}/match-start")

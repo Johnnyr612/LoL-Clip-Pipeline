@@ -14,7 +14,7 @@ from .fight_detector import (
     FightDetector,
     TrimSettings,
     apply_highlight_trim_settings,
-    estimate_combat_screen_x_positions,
+    estimate_combat_screen_x_position_tracks,
     estimate_visible_enemy_count,
 )
 from .frame_io import FrameDecodeError, decode_video
@@ -279,7 +279,7 @@ class ClipPipeline:
                 10,
                 "Computing dynamic crop trajectory...",
             )
-            player_screen_x_positions, threat_screen_x_positions = estimate_combat_screen_x_positions(bundle.full_frames)
+            player_screen_x_positions, threat_screen_x_positions, ally_screen_x_positions = estimate_combat_screen_x_position_tracks(bundle.full_frames)
             threat_signal_debug = _threat_signal_to_debug(threat_screen_x_positions)
             keyframes = self.cropper.compute_keyframes(
                 bundle.full_frames,
@@ -293,6 +293,7 @@ class ClipPipeline:
                 threat_screen_x_positions,
                 crop_settings,
                 trim.fight_start,
+                ally_screen_x_positions,
             )
             clip_mask = (bundle.timestamps_full >= trim.clip_start) & (bundle.timestamps_full <= trim.clip_end)
             clip_timestamps = bundle.timestamps_full[clip_mask]

@@ -16,6 +16,7 @@ from backend.fight_detector import (
     apply_highlight_trim_settings,
     apply_dialog_extension,
     boundaries_from_scores,
+    estimate_combat_screen_x_position_tracks,
     estimate_visible_enemy_count,
     estimate_combat_screen_x_positions,
     finish_on_kill_or_death,
@@ -550,6 +551,20 @@ def test_blue_ally_health_bars_do_not_beat_red_enemy_for_crop_threat():
 
     assert player_positions == [880.0] * 3
     assert threat_positions == [1260.0] * 3
+
+
+def test_estimate_combat_screen_x_tracks_reports_edge_ally_separately():
+    frames = np.zeros((3, 1080, 1920, 3), dtype=np.uint8)
+    for frame in frames:
+        _draw_bar(frame, 820, 360, 940, THICK_BAR_H, (40, 210, 60))
+        _draw_bar(frame, 520, 300, 640, THICK_BAR_H, (30, 120, 230))
+        _draw_enemy_champion_bar(frame, 1200, 300, 1320)
+
+    player_positions, threat_positions, ally_positions = estimate_combat_screen_x_position_tracks(frames)
+
+    assert player_positions == [880.0] * 3
+    assert threat_positions == [1260.0] * 3
+    assert ally_positions == [580.0] * 3
 
 
 def test_objective_health_number_red_bar_does_not_pull_crop_threat_position():

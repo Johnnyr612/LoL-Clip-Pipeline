@@ -73,7 +73,7 @@ function App() {
       </header>
 
       {activeView === "jobs" ? (
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-5 px-5 py-5 lg:grid-cols-[380px_minmax(0,1fr)]">
+        <div className="mx-auto grid max-w-[92rem] grid-cols-1 gap-5 px-5 py-5 lg:grid-cols-[minmax(460px,520px)_minmax(0,1fr)]">
           <JobDashboard onSelectJob={setSelectedJob} selectedJob={selectedJob} />
           <section className="grid min-w-0 gap-4">
             <OutputPanel job={selectedJob} />
