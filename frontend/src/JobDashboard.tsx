@@ -561,10 +561,10 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
               <div className="grid max-h-80 min-w-0 gap-2 overflow-y-auto overflow-x-hidden pr-1">
                 {selectableRawFiles.length ? (
                   selectableRawFiles.slice(0, 80).map((file) => (
-                    <div className="grid min-h-[96px] min-w-0 gap-2 overflow-hidden rounded-md border border-lane bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900" key={file.path}>
+                    <div className="grid min-w-0 gap-2 rounded-md border border-lane bg-white p-3 text-sm dark:border-slate-800 dark:bg-slate-900" key={file.path}>
                       <div className="flex min-w-0 items-center justify-between gap-2">
                         <span className="min-w-0 truncate font-medium" title={file.filename}>{file.filename}</span>
-                        <span className={rawStatusChipClass(file.status)}>{rawStatusLabel(file.status)}</span>
+                        <span className={`${rawStatusChipClass(file.status)} shrink-0`}>{rawStatusLabel(file.status)}</span>
                       </div>
                       <div className="grid min-w-0 gap-1 text-xs text-slate-500 dark:text-slate-400">
                         <span className="min-w-0 truncate" title={file.source_dir}>{file.source_dir}</span>
