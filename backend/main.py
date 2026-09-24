@@ -474,7 +474,7 @@ async def list_highlight_checkpoints() -> dict:
     root = _checkpoints_root()
     root.mkdir(parents=True, exist_ok=True)
     files = []
-    for path in root.glob("videomae_lol_highlight*.pt"):
+    for path in [*root.glob("videomae_lol_highlight*.pt"), *root.glob("vjepa21_highlight*.pt")]:
         try:
             files.append(_checkpoint_payload(path.resolve()))
         except OSError:

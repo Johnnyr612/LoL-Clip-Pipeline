@@ -217,6 +217,8 @@ FFMPEG_SOURCE_BITRATE_MULTIPLIER = _float_env("LOL_CLIP_SOURCE_BITRATE_MULTIPLIE
 FFMPEG_AUDIO_BITRATE = os.environ.get("LOL_CLIP_AUDIO_BITRATE", "320k").strip() or "320k"
 CROP_QUANTIZE_THRESHOLD = 5
 
+VJEPA_SOURCE_DIR = Path(os.environ.get("LOL_CLIP_VJEPA_SOURCE_DIR", str(PROJECT_ROOT / "external" / "vjepa2-main")))
+
 VIDEOMAE_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_best.pt"
 VIDEOMAE_HIGHLIGHT_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "videomae_lol_highlight_editor_10ep_3layers.pt"
 _LABEL_REVIEW_HIGHLIGHT_CHECKPOINT = os.environ.get("LOL_CLIP_LABEL_REVIEW_HIGHLIGHT_CHECKPOINT", "").strip()
@@ -252,3 +254,6 @@ TIKTOK_REDIRECT_URI = os.environ.get("TIKTOK_REDIRECT_URI", "http://127.0.0.1:80
 TIKTOK_AUTH_SUCCESS_URL = os.environ.get("TIKTOK_AUTH_SUCCESS_URL", "http://127.0.0.1:5173").strip()
 TIKTOK_DEFAULT_SCOPES = "user.info.basic,video.upload"
 TIKTOK_DIRECT_SCOPES = "user.info.basic,video.publish"
+
+# V-JEPA inference throughput; batch=1 restores single-window execution.
+VJEPA_WINDOW_BATCH_SIZE = max(1, min(16, _int_env("LOL_CLIP_VJEPA_BATCH_SIZE", 2)))

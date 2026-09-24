@@ -610,7 +610,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
           >
             {checkpoints.map((checkpoint) => (
               <option key={checkpoint.path} value={checkpoint.path}>
-                {checkpoint.filename}
+                {checkpoint.filename.startsWith("vjepa21_highlight") ? `V-JEPA 2.1 — ${checkpoint.filename}` : checkpoint.filename}
               </option>
             ))}
           </select>
@@ -770,7 +770,7 @@ export function JobDashboard({ selectedJob, onSelectJob }: Props) {
           <span className="grid gap-1">
             <span className="font-semibold text-slate-900 dark:text-slate-100">Skip minimap detection</span>
             <span className="text-xs leading-5 text-slate-500 dark:text-slate-400">
-              Bypass minimap champion/team detection and rely on VideoMAE, main-frame HUD, health bars, and optional local vision signals.
+              Bypass minimap champion/team detection and rely on the selected highlight model, main-frame HUD, health bars, and optional local vision signals.
             </span>
           </span>
         </label>

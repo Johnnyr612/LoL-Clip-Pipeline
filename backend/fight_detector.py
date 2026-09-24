@@ -1037,7 +1037,21 @@ class FightDetector:
         timestamps: np.ndarray,
         source_duration: float,
         checkpoint_path: Path | None = None,
+        source_path: Path | None = None,
+        vjepa_frames=None,
+        inference_metrics: dict | None = None,
     ) -> TrimResult:
+        if checkpoint_path and Path(checkpoint_path).name.startswith("vjepa21_highlight"):
+            if source_path is None:
+                raise HighlightEditorError("V-JEPA requires the original MP4 for dense window sampling")
+            try:
+                from .vjepa_detector import predict_trim
+                if vjepa_frames is None and inference_metrics is None:
+                    return predict_trim(Path(source_path), source_duration, Path(checkpoint_path))
+                return predict_trim(Path(source_path), source_duration, Path(checkpoint_path),
+                                    decoded=vjepa_frames, metrics=inference_metrics)
+            except Exception as exc:
+                raise HighlightEditorError(f"V-JEPA highlight inference failed: {exc}") from exc
         if len(full_frames) == 0 or len(timestamps) == 0:
             raise HighlightEditorError("VideoMAE highlight editor received no decoded frames")
         try:

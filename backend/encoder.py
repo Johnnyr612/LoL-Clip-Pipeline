@@ -314,7 +314,9 @@ class VideoEncoder:
             crop_x = _crop_x_expression(crops, crop_timestamps, clip_start, clip_end, crop_transition)
             output_fps = _selected_output_fps(source_profile)
             gop_size = str(max(1, int(round(float(output_fps)))))
-            vf = f"crop={config.CROP_W}:{config.CROP_H}:x={crop_x}:y=0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"
+            # Frame decoding/crop trajectories use a 1920x1080 coordinate space.
+            # Normalize the source to that space before applying the crop.
+            vf = f"scale=1920:1080:flags=lanczos,setsar=1,crop={config.CROP_W}:{config.CROP_H}:x={crop_x}:y=0,scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}:flags=lanczos"
             _run_ffmpeg(
                 [
                     ffmpeg,

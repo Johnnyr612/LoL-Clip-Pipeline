@@ -289,7 +289,12 @@ def _record_from_videomae_detection(raw_path: Path, highlight_checkpoint_path: P
     job_id = f"label_review_{uuid.uuid4().hex}"
     temp_dir = config.TEMP_DIR / job_id
     try:
-        bundle = decode_video(raw_path, job_id)
+        vjepa_cfg = None
+        if checkpoint_path.name.startswith("vjepa21_highlight"):
+            from .vjepa_detector import prepare_model
+            vjepa_cfg = prepare_model(checkpoint_path)
+        bundle = decode_video(raw_path, job_id, vjepa_config=vjepa_cfg, duration=validation.duration,
+                              include_minimap=False, include_audio=False)
         detector = FightDetector()
         try:
             trim = detector.predict_highlight_trim(
@@ -297,6 +302,8 @@ def _record_from_videomae_detection(raw_path: Path, highlight_checkpoint_path: P
                 bundle.timestamps_full,
                 validation.duration,
                 checkpoint_path,
+                source_path=raw_path,
+                vjepa_frames=bundle.vjepa_frames,
             )
         except HighlightEditorError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -317,7 +324,7 @@ def _record_from_videomae_detection(raw_path: Path, highlight_checkpoint_path: P
         "fight_segments": fight_segments,
         "segments": _segments_from_fights(trim.clip_start, trim.clip_end, fight_segments),
         "match": {
-            "method": "videomae_highlight_editor",
+            "method": "vjepa21_highlight_editor" if "vjepa21_highlight_editor" in trim.flags else "videomae_highlight_editor",
             "score": None,
             "confidence": "high",
         },
@@ -325,7 +332,7 @@ def _record_from_videomae_detection(raw_path: Path, highlight_checkpoint_path: P
         "reviewed": False,
         "skipped": False,
         "review_status": "needs_review",
-        "review_note": "Generated from current VideoMAE weights; review before approving for training.",
+        "review_note": "Generated from selected highlight weights; review before approving for training.",
         "detector_flags": [
             *trim.flags,
             f"label_review_checkpoint={checkpoint_path}",

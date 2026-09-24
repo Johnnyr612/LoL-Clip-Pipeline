@@ -1,4 +1,4 @@
-﻿__pycache__/
+ï»¿__pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest-tmp/
@@ -49,3 +49,12 @@ Thumbs.db
 .venv.broken-*/
 python-3.12*.exe
 .python312/
+
+# Local model weights and downloaded source
+/checkpoints/**/*.pt
+/external/vjepa2-main/
+/.feature-cache/
+/.codex-output/
+/requirements-training.txt
+/fight_timeline_trainer.py
+/predict_vjepa_highlight.py

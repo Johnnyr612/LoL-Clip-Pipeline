@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+import time
+import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -76,6 +78,16 @@ class ClipPipeline:
         db_path = self.db_path
         flags: list[str] = []
         current_stage = "queued"
+        job_started = stage_started = time.perf_counter()
+        timings = {}
+        inference_metrics = {}
+        def finish_stage():
+            nonlocal stage_started
+            now = time.perf_counter()
+            if current_stage != "queued":
+                timings[current_stage] = round(now - stage_started, 4)
+                logging.getLogger(__name__).info("Job %s %s: %.3fs", job_id, current_stage, now-stage_started)
+            stage_started = now
         crop_settings = crop_settings or CropSettings()
         processing_settings = processing_settings or ProcessingSettings()
         if await models.get_job(db_path, job_id) is None:
@@ -93,6 +105,7 @@ class ClipPipeline:
             if not validation.has_audio:
                 flags.append("no_audio")
 
+            finish_stage()
             current_stage = "stage1_decode"
             await models.update_job(
                 db_path,
@@ -114,9 +127,17 @@ class ClipPipeline:
                 job_id,
                 "stage1_decode",
                 50,
-                "Extracting frames from 4K source...",
+                "Decoding shared analysis frames...",
             )
-            bundle = decode_video(source_path, job_id)
+            selected_checkpoint = highlight_checkpoint_path or config.VIDEOMAE_HIGHLIGHT_CHECKPOINT
+            vjepa_cfg = None
+            if selected_checkpoint.name.startswith("vjepa21_highlight"):
+                from .vjepa_detector import prepare_model
+                vjepa_cfg = prepare_model(selected_checkpoint, inference_metrics)
+            bundle = decode_video(source_path, job_id, vjepa_config=vjepa_cfg,
+                                  duration=validation.duration,
+                                  include_minimap=not processing_settings.skip_minimap_detection,
+                                  include_audio=False)
             await update_job_progress(
                 db_path,
                 job_id,
@@ -125,6 +146,7 @@ class ClipPipeline:
                 "Frames extracted successfully",
             )
 
+            finish_stage()
             current_stage = "stage2_minimap"
             await models.update_job(db_path, job_id, stage=current_stage)
             stride = max(1, config.MINIMAP_DETECTION_STRIDE)
@@ -186,6 +208,7 @@ class ClipPipeline:
                     "Minimap scan complete",
                 )
 
+            finish_stage()
             current_stage = "stage3_fight"
             await models.update_job(db_path, job_id, stage=current_stage, flags=flags)
             await update_job_progress(
@@ -193,14 +216,19 @@ class ClipPipeline:
                 job_id,
                 "stage3_fight",
                 10,
-                "Loading VideoMAE highlight editor...",
+                "Loading selected highlight model...",
             )
             trim = self.fight_detector.predict_highlight_trim(
                 bundle.full_frames,
                 bundle.timestamps_full,
                 validation.duration,
                 highlight_checkpoint_path,
+                source_path=source_path,
+                vjepa_frames=bundle.vjepa_frames,
+                inference_metrics=inference_metrics,
             )
+            if bundle.vjepa_frames is not None:
+                bundle.vjepa_frames.frames.clear()  # Release dense RGB buffers before crop/export.
             raw_trim = trim
             trim = apply_highlight_trim_settings(
                 trim,
@@ -270,6 +298,7 @@ class ClipPipeline:
             )
             flags.extend(trim.flags)
 
+            finish_stage()
             current_stage = "stage4_crop"
             await models.update_job(db_path, job_id, stage=current_stage, flags=flags)
             await update_job_progress(
@@ -307,6 +336,7 @@ class ClipPipeline:
                 "Crop trajectory ready",
             )
 
+            finish_stage()
             current_stage = "stage5_encode"
             await models.update_job(db_path, job_id, stage=current_stage, flags=flags)
             await update_job_progress(
@@ -341,6 +371,8 @@ class ClipPipeline:
                 "Video encoded successfully",
             )
 
+            finish_stage()
+            timings["total"] = round(time.perf_counter() - job_started, 4)
             await models.update_job(
                 db_path,
                 job_id,
@@ -353,6 +385,8 @@ class ClipPipeline:
                     **trim_debug,
                     "crop_settings": _crop_settings_to_debug(crop_settings),
                     "crop_debug": crop_debug,
+                    "timings_seconds": timings,
+                    "vjepa_inference": inference_metrics,
                 },
                 output_path=str(output_path),
                 stage_failed=None,
@@ -360,6 +394,8 @@ class ClipPipeline:
             )
             return job_id
         except (InputValidationError, FrameDecodeError, EncoderError, Exception) as exc:
+            finish_stage()
+            timings["total"] = round(time.perf_counter() - job_started, 4)
             await update_job_progress(
                 db_path,
                 job_id,
@@ -371,6 +407,7 @@ class ClipPipeline:
                 db_path,
                 job_id,
                 status="failed",
+                detection_debug={"timings_seconds": timings, "vjepa_inference": inference_metrics},
                 stage_failed=current_stage,
                 error_detail=str(exc),
                 flags=flags,

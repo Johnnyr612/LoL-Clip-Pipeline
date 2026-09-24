@@ -1,0 +1,4 @@
+# Optional local V-JEPA inference dependencies; retain the installed CUDA torch build.
+timm>=1.0,<2
+einops>=0.8,<1
+tqdm>=4.66,<5
