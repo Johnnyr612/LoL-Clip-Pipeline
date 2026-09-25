@@ -11,7 +11,7 @@ The frontend is a Vite React dashboard with three current views:
 | File | Purpose | Split target |
 | --- | --- | --- |
 | `src/App.tsx` | Top-level navigation and view selection | Split nav for official app |
-| `src/JobDashboard.tsx` | Job creation, queue, trim/crop settings, checkpoint choice | Official app |
+| `src/JobDashboard.tsx` | Job creation, queue, trim presets (including `Model Only`), crop mode/transition, skip-minimap toggle, highlight checkpoint picker (VideoMAE and V-JEPA 2.1 files from `GET /checkpoints/highlight`) | Official app |
 | `src/OutputPanel.tsx` | Output preview, media/debug/crop/TikTok details | Official app |
 | `src/SettingsPanel.tsx` | Folder visibility and local source-folder shortcuts | Official app |
 | `src/LabelReview.tsx` | Trainer/labeler raw inventory and label editing | Trainer/labeler |

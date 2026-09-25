@@ -24,7 +24,7 @@ Maintenance notes:
 
 - Keep these assets current when Riot/Data Dragon adds or renames champions.
 - If a champion is missing, runtime participant summaries can become noisier.
-- The minimap YOLO checkpoint is still the main minimap champion detector, but these assets remain useful for HUD portrait matching and fallback-style support.
+- The minimap YOLO checkpoint (`checkpoints/minimap_yolov8s_best.pt`, local only, not tracked by Git) is the only minimap champion detector. These assets are used for HUD portrait matching of the player's champion.
 
 ## `training/`
 

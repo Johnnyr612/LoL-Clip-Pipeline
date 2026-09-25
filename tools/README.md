@@ -8,7 +8,7 @@ This folder contains trainer/labeler support scripts. These are useful for datas
 | --- | --- | --- |
 | `build_fight_training_labels.py` | Match raw Medal clips to edited trims, create `fight_label_candidates.json`, and create initial trainer labels | Trainer/labeler |
 | `pixel_match_label_candidates.py` | Pixel/frame matching helper for label candidates | Trainer/labeler |
-| `audit_fight_detection.py` | Evaluate fight detection behavior on known clips/labels | Trainer/labeler |
+| `audit_fight_detection.py` | Print per-timestamp health-bar evidence and legacy VideoMAE fight scores for one video. **Currently broken:** it imports `_healthbar_engagement_scores`, which no longer exists in `backend/fight_detector.py`. | Trainer/labeler |
 
 ## Medal Raw Clip Workflow
 

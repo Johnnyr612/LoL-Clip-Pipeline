@@ -57,7 +57,7 @@ This is the exact distinction needed for "already used for training", "new files
 2. In the trainer/labeler UI, click `Refresh Raw Files`.
 3. The new MP4 appears as `new_holdout_candidate`.
 4. Click `Add to Review`.
-5. The backend runs the current VideoMAE highlight editor and creates a candidate record.
+5. The backend runs the selected highlight editor (VideoMAE or V-JEPA 2.1) and creates a candidate record.
 6. Review `clip_start`, `clip_end`, and one or more `fight_segments`.
 7. Click `Save` to keep it in review, `Skip` to exclude it, or `Approve` to include it in `videomae_labels.json`.
 8. Training consumes only approved, non-skipped labels.

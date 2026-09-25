@@ -5,17 +5,19 @@ Local pipeline for turning League of Legends source clips into vertical short-fo
 ## What It Does
 
 - Accepts an existing `.mp4` clip path through the dashboard or `/process` API.
-- Extracts full-frame and minimap frames with OpenCV.
-- Detects post-worthy trim timing with the fine-tuned VideoMAE highlight editor. Jobs fail if that checkpoint is missing or cannot produce a trim.
+- Decodes the source once with OpenCV: 1920x1080 analysis frames at 2 fps, minimap crops at 4 fps (skipped when minimap detection is off), and, for V-JEPA checkpoints, dense 384x384 window frames.
+- Detects post-worthy trim timing with the selected highlight editor checkpoint: the fine-tuned VideoMAE editor (default) or the V-JEPA 2.1 editor. Jobs fail if the selected checkpoint is missing or cannot produce a trim.
 - Detects player/enemy context from YOLO minimap champion detections, temporal team-color tracking, HUD portraits, health bars, and optional full-frame YOLO classification.
-- Computes a smooth 3:4 vertical crop focused on the fight.
+- Computes a 3:4 vertical crop path that steers toward the fight using full-frame health bars (green = player, red = enemies, blue = allies).
 - Encodes a 1080x1440 MP4 with FFmpeg.
+- Records per-stage timings (`timings_seconds`) and V-JEPA inference diagnostics (`vjepa_inference`) in each job's debug payload.
 - Can send completed clips to TikTok through the Content Posting API after TikTok OAuth connection.
 - Stores job state, queue/progress, flags, output paths, trim/crop settings, and detection debug data in SQLite.
 
 ## Current Limitations
 
-- Champion recognition now uses the YOLOv8 minimap champion detector weights only for minimap champion detection.
+- Champion recognition uses the YOLOv8 minimap champion detector weights only for minimap champion detection. Those weights are no longer tracked in the repo; without them, minimap detection produces no detections.
+- V-JEPA inference supports clips up to 120 seconds and produces one continuous highlight span (no multi-fight montage).
 - Dynamic crop steering uses full-frame health-bar detections only. Minimap detections still help identify champions and teams, but the minimap has no input on the view cropper.
 - TikTok direct posting requires TikTok app review and the `video.publish` scope. Upload-to-inbox with `video.upload` is the recommended first review path.
 
@@ -56,7 +58,7 @@ To focus jobs on the raw clip timing/crop path while leaving minimap champion/te
 $env:LOL_CLIP_SKIP_MINIMAP_DETECTION = "1"
 ```
 
-Skipped minimap jobs still use the VideoMAE highlight editor, main-frame HUD matching, health-bar crop signals, and optional local full-frame YOLO classification.
+Skipped minimap jobs also skip minimap frame extraction. They still use the selected highlight editor, main-frame HUD matching, health-bar crop signals, and optional local full-frame YOLO classification.
 
 ## Team Color Tracking
 
@@ -100,7 +102,9 @@ TikTok's production web Login Kit requires registered `https` redirect URIs. Use
 
 ## Highlight Editing And VideoMAE
 
-The pipeline requires `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt` by default. That model predicts the post-worthy trim directly from the raw one-minute clip: an include/exclude timeline plus phase labels (`exclude`, `buildup`, `fight`, `payoff`). If the highlight editor is missing, cannot load, or does not select an include span, the job fails so the model issue is visible.
+The dashboard's highlight-weights picker lists every `checkpoints/videomae_lol_highlight*.pt` and `checkpoints/vjepa21_highlight*.pt` file (served by `GET /checkpoints/highlight`). The selected file is sent with each `/process` request and is also used when a processed clip is added to Label Review. If nothing is selected, the backend falls back to `config.VIDEOMAE_HIGHLIGHT_CHECKPOINT`.
+
+The VideoMAE path expects `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt` by default. That model predicts the post-worthy trim directly from the raw one-minute clip: an include/exclude timeline plus phase labels (`exclude`, `buildup`, `fight`, `payoff`). If the highlight editor is missing, cannot load, or does not select an include span, the job fails so the model issue is visible.
 
 Fine-tuning is handled by `backend/trainer_worker.py`:
 
@@ -112,6 +116,17 @@ Fine-tuning is handled by `backend/trainer_worker.py`:
 - The heads are trained with AdamW, cosine warmup scheduling, gradient accumulation, validation loss tracking, and early stopping.
 
 The first training pass overfit because the dataset was too small and too easy: many negative windows came from the same source clips and did not represent enough real non-fight gameplay. That produced a checkpoint that could memorize the training distribution better than it generalized to new clips.
+
+## V-JEPA 2.1 Highlight Editor
+
+Checkpoints whose filename starts with `vjepa21_highlight` (currently `checkpoints/vjepa21_highlight_best_10ep.pt`) are routed to `backend/vjepa_detector.py` instead of VideoMAE:
+
+- `vjepa_detector.prepare_model()` loads and caches the checkpoint once (keyed by path, size, and mtime) and validates the saved architecture, 384px preprocessing, and normalization.
+- `frame_io.decode_video()` decodes the dense V-JEPA window frames in the same pass as the crop-analysis frames, resizing the original frame (not the 1080p copy) exactly as in training.
+- `vjepa_runtime.py` holds the inference-only model: a V-JEPA 2.1 ViT-B encoder over 2-second, 16-frame windows at a 1-second step, followed by a temporal head. `decode_highlight()` turns the per-second logits into one highlight span; an auxiliary combat head sets `fight_start`/`fight_end`.
+- Windows are batched on CUDA (`LOL_CLIP_VJEPA_BATCH_SIZE`, default `2`, range 1-16) with fp16 autocast. Out-of-memory errors halve the batch; CPU uses one window at a time.
+
+Local requirements (ignored by Git): the checkpoint file, the official source tree at `external/vjepa2-main/` (override with `LOL_CLIP_VJEPA_SOURCE_DIR`), and `pip install -r requirements-vjepa.txt`. Use the `Model Only` trim preset to see the raw model timing without the heuristic trim adjustments. See `docs/vjepa-local-preview.md` for details and timing inspection commands.
 
 ## Highlight Training Status
 
@@ -164,19 +179,19 @@ Useful follow-up work:
 - Node.js and npm
 - FFmpeg and ffprobe on `PATH`
 - Git LFS for large checkpoint and sample video files.
-- PyTorch for VideoMAE inference/training and Ultralytics YOLO. It is intentionally not pinned in `requirements.txt`; install a CPU or CUDA build appropriate for your machine.
-- Optional: CUDA-enabled PyTorch for faster VideoMAE training.
+- PyTorch for VideoMAE/V-JEPA inference, VideoMAE training, and Ultralytics YOLO. It is intentionally not pinned in `requirements.txt`; install a CPU or CUDA build appropriate for your machine.
+- Optional: CUDA-enabled PyTorch for faster VideoMAE training and V-JEPA inference.
+- Optional: `requirements-vjepa.txt` (`timm`, `einops`, `tqdm`) plus `external/vjepa2-main/` for V-JEPA checkpoints.
 - Optional: `LOL_CLIP_YOLO_WEIGHTS` for local YOLO participant classification.
 - Optional: TikTok developer credentials for Upload/Direct Post.
 
 ## Included Large Files
 
-This project includes trained weights and a sample clip through Git LFS:
+The repo includes one large file through Git LFS:
 
-- `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt`: default fine-tuned VideoMAE highlight editor.
-- `checkpoints/videomae_lol_best.pt`: legacy fine-tuned VideoMAE fight detector, kept for the optional `--task fight` trainer path.
-- `checkpoints/minimap_yolov8s_best.pt`: YOLOv8 minimap champion detector.
 - `TestClip.mp4`: sample input clip for testing the pipeline.
+
+Model checkpoints are **not** tracked in the repo anymore (the `checkpoints/` directory was removed from Git). Place them in `checkpoints/` locally; see `Local Checkpoint Files` below.
 
 `TestClip.mp4` was not part of the training set. It is included only as a reproducible test clip so a new user can run the pipeline end to end after setup.
 
@@ -257,7 +272,7 @@ LOL_CLIP_OUTPUT_DIR=D:\LoLClipOutputVids
 
 The dashboard has three main tabs:
 
-- `Jobs`: start local-path jobs, pick a highlight checkpoint, choose trim presets, choose crop view settings, monitor the active queue, browse previous outputs, preview the final vertical clip, inspect media/crop debug, and post completed clips to TikTok.
+- `Jobs`: start local-path jobs, pick a highlight checkpoint (VideoMAE or V-JEPA 2.1), choose trim presets, choose crop view settings, monitor the active queue, browse previous outputs, preview the final vertical clip, inspect media/crop debug, and post completed clips to TikTok.
 - `Label Review`: review raw files and model-generated trim boundaries for future VideoMAE training data.
 - `Settings`: view/open local folders and save source clip folders.
 
@@ -265,30 +280,40 @@ The backend intentionally runs one processing job at a time with a semaphore. If
 
 ## Crop Composition
 
-The vertical crop stays at 3:4 (`810x1080` from a 1920x1080 source, then scaled to `1080x1440`). The dashboard sends crop settings per job. `dynamic` mode is tuned for locked-camera clips: it starts centered, waits for persistent visible enemy direction, reframes with rule-of-thirds look room when the enemy can fit, limits non-center view changes, and recenters when no enemy threat remains.
+The vertical crop stays at 3:4 (`810x1080` in the normalized 1920x1080 space, then scaled to `1080x1440`). The dashboard sends crop settings per job (`mode`, `transition`).
 
-Dynamic crop steering only uses thick, stable full-frame health bars:
+- `static` uses one fixed centered crop (`LOL_CLIP_STATIC_CROP_X`).
+- `dynamic` (default) is tuned for locked-camera clips. It opens with a rule-of-thirds composition (player on a third, look-room toward `LOL_CLIP_DYNAMIC_DEFAULT_THIRDS_SIDE`, default `right`), uses an enemy found near the model's `fight_start` to frame the opening of the fight, reframes toward a persistent visible enemy side, centers the player/enemy cluster when they are close together, widens to include a nearby ally when everyone fits, avoids the minimap corner, and falls back to the default composition when no enemy remains.
 
-- Green health bars anchor the player.
-- Thick red health bars define visible enemy threat direction.
-- Narrow minion/ward-like red bars are filtered out.
+Dynamic steering only uses full-frame health bars (`fight_detector.estimate_combat_screen_x_position_tracks`):
+
+- The most central, thick green bar anchors the player. If no player bar is found in a frame, that frame contributes no player, enemy, or ally position.
+- Thick red bars with a champion level badge next to them define enemy position; objective bars (with text over them) and thin minion/ward bars are filtered out. When several enemies are visible, the one pushing farthest past the centered crop's edge is chosen.
+- Thick blue bars define an ally position.
+- Enemy/ally samples need support from nearby samples before they count, and the cropper also discards single-frame jumps and takes a 0.75s median around each 1-second keyframe.
 - Minimap champion detections and minimap player positions do not move the crop.
 
 The output panel's `Crop plan` section records the chosen mode, transition, movement range, keyframe count, position changes, sample crop positions, and the number of health-bar samples that steered the crop. If movement is `0px`, Jump and Smooth will look identical for that output because the crop path resolved to a fixed view.
+
+See `backend/README.md` (`View Shifter`) for the file-by-file flow.
 
 Useful `.env` controls:
 
 - `LOL_CLIP_CROP_MODE=dynamic` follows persistent visible enemy direction in locked-camera clips.
 - `LOL_CLIP_CROP_MODE=static` uses one fixed crop.
-- `LOL_CLIP_CROP_TRANSITION=cut` jumps between chosen crop positions. Set `pan` for a smooth sliding view.
+- `LOL_CLIP_CROP_TRANSITION=cut` jumps between chosen crop positions. Set `pan` for a speed-limited slide (240px/s).
 - `LOL_CLIP_PLAYER_COMPOSITION=thirds` enables look-room framing. Set `center` to keep the player centered.
+- `LOL_CLIP_DYNAMIC_DEFAULT_THIRDS_SIDE=right` sets the look-room side used before an enemy side is known (`left`, `right`, or `center`).
 - `LOL_CLIP_THIRDS_LOOK_ROOM_PX=20` moves the player 20px farther from the fight-side third, giving the crop more room toward visible enemies.
 - `LOL_CLIP_DYNAMIC_THREAT_SIDE_TRIGGER_PX=60` controls how far left/right an enemy must be from the player before it counts as a crop direction.
+- `LOL_CLIP_DYNAMIC_CLUSTER_CENTER_TRIGGER_PX=320` centers the player/enemy pair instead of using thirds when they are this close.
 - `LOL_CLIP_DYNAMIC_THREAT_HOLD_SEC=1.0` controls how long that direction must persist before the crop reframes.
-- `LOL_CLIP_DYNAMIC_MAX_VIEW_CHANGES=3` caps non-center enemy reframes per clip.
+- `LOL_CLIP_DYNAMIC_MAX_VIEW_CHANGES=3` caps non-center enemy reframes per clip (a reframe that is needed to keep the enemy visible is still allowed).
+- `LOL_CLIP_DYNAMIC_OPENING_LOOKAHEAD_SEC=3.0` controls how far into the clip the opening framing looks for the first enemy.
 - `LOL_CLIP_DYNAMIC_OPENING_FOCUS_HOLD_SEC=2.0` keeps the fight-start crop framed around the player/enemy pair for the first seconds of combat before normal dynamic framing resumes.
 - `LOL_CLIP_DYNAMIC_PAIR_MIN_PADDING_PX=24` lets the crop use smaller edge padding when a red health bar is approaching the 3:4 view but strict padding would keep the camera centered.
 - `LOL_CLIP_CAMERA_THREAT_SUPPORT_TOLERANCE_PX=170` controls how loosely nearby red health-bar samples are grouped as the same threat.
+- `LOL_CLIP_CAMERA_THREAT_BAR_MIN_WIDTH` / `_MIN_HEIGHT` / `_MIN_AREA` (defaults 25 / 8 / 300) set the red-bar size filter for crop steering.
 
 ## Output Encoding Quality
 
@@ -325,13 +350,14 @@ Leave `LOL_CLIP_VIDEO_BITRATE` empty to use CRF mode instead. Lower CRF values i
 
 ## Local Checkpoint Files
 
-The trained checkpoint files are intentionally tracked with Git LFS so users can run the pipeline without retraining:
+The code expects these files in `checkpoints/` (not tracked by Git; `.gitattributes` still routes any committed `checkpoints/*.pt` through LFS):
 
-- `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt`
-- `checkpoints/videomae_lol_best.pt`
-- `checkpoints/minimap_yolov8s_best.pt`
+- `checkpoints/vjepa21_highlight_best_10ep.pt`: V-JEPA 2.1 highlight editor.
+- `checkpoints/videomae_lol_highlight_editor_10ep_3layers.pt`: default VideoMAE highlight editor (`config.VIDEOMAE_HIGHLIGHT_CHECKPOINT`).
+- `checkpoints/videomae_lol_best.pt`: legacy VideoMAE fight detector for the `--task fight` trainer path.
+- `checkpoints/minimap_yolov8s_best.pt`: YOLOv8 minimap champion detector (or set `LOL_CLIP_MINIMAP_YOLO_WEIGHTS`).
 
-If the highlight editor checkpoint is missing or fails, processing stops with an error. This is intentional: the trimming decision should come from the trained highlight editor, not a hardcoded padding or heuristic path.
+The dashboard picker only lists highlight checkpoints that actually exist, so with only the V-JEPA file present, V-JEPA is what gets selected. If the selected highlight editor checkpoint is missing or fails, processing stops with an error. This is intentional: the trimming decision should come from the trained highlight editor, not a hardcoded padding or heuristic path.
 
 ## Secrets
 
@@ -354,9 +380,13 @@ Run backend tests:
 
 - `backend/`: FastAPI app, clip pipeline, detection, cropping, encoding, TikTok posting, and training coordinator.
 - `backend/team_tracker.py`: conservative minimap team-color tracker based on border-ring sampling, cluster skipping, and temporal voting.
+- `backend/vjepa_detector.py`, `backend/vjepa_runtime.py`: V-JEPA 2.1 highlight inference.
+- `docs/`: split plan, branching notes, and V-JEPA local preview notes.
+- `tools/`: trainer/labeler dataset and audit scripts.
+- `external/vjepa2-main/`: local, Git-ignored copy of the official V-JEPA 2 source (needed for V-JEPA checkpoints).
 - `frontend/`: React/Vite dashboard.
 - `data/minimap_icons/`: champion icon source data used by HUD portrait matching.
-- `checkpoints/`: model checkpoints tracked through Git LFS.
+- `checkpoints/`: local model checkpoints (not tracked by Git).
 
 ## Split-Readiness Docs
 
@@ -364,8 +394,8 @@ Additional architecture and migration notes are available in:
 
 - `docs/PROJECT_SPLIT_PLAN.md`: official app versus trainer/labeler ownership map.
 - `docs/BRANCHING_AND_MIGRATION.md`: branch names, V2 migration order, and checkpoint promotion notes.
+- `docs/vjepa-local-preview.md`: V-JEPA setup, batch-size tuning, and timing inspection.
 - `backend/README.md`: backend route/module ownership and app isolation notes.
 - `frontend/README.md`: dashboard view ownership and label-review split notes.
 - `data/README.md` and `data/training/README.md`: runtime assets versus private trainer-labeler data.
-- `checkpoints/README.md`: release versus experiment checkpoint policy.
 - `tools/README.md`: training/data-audit script ownership.
